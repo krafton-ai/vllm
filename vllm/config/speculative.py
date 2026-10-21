@@ -321,6 +321,11 @@ class SpeculativeConfig:
             "dspark",
         )
         factors.append(uses_aux_hidden_states)
+        # Servers that differ only in the draft count or draft sampling must
+        # not share a compile cache entry (a k=3 entry fails
+        # assert_size_stride at k=5).
+        factors.append(self.num_speculative_tokens)
+        factors.append(self.draft_sample_method)
 
         if uses_aux_hidden_states and self.draft_model_config is not None:
             factors.append(self.draft_model_config.compute_hash())

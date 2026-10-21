@@ -372,6 +372,175 @@ class KimiK3ForConditionalGenerationConfig(VerifyAndUpdateConfig):
                 quant_config["quant_method"] = "mxfp4"
 
 
+class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
+    """Serve raon-1-mini with its qualified B300 configuration by default.
+
+    The release was qualified with one serving configuration; the settings the
+    command line leaves unset take its values, so a plain ``vllm serve`` with
+    the model card's flags reproduces it. Process-wide settings are exported to
+    the environment before the engine processes start, without overriding
+    variables the caller set.
+    """
+
+    # Routed experts are MXFP8 W8A8 on grouped CUTLASS kernels (mode 4). vLLM's
+    # skip-padding router marks dummy and capture rows with expert -1, which
+    # that path cannot consume.
+    PROCESS_ENV = {
+        "VLLM_MOE_SKIP_PADDING": "0",
+        "VLLM_USE_DEEP_GEMM": "0",
+        "VLLM_USE_FLASHINFER_SAMPLER": "1",
+        # First-time kernel builds can exceed the 10 minute default.
+        "VLLM_ENGINE_READY_TIMEOUT_S": "3600",
+        # The pinned runtime crashes in TP symmetric-memory init on B300.
+        "VLLM_ALLREDUCE_USE_SYMM_MEM": "0",
+        # Mixed-T eager steps fragment the caching allocator by 23-30 GiB at
+        # 64-128 concurrent requests; expandable segments keep 30 GiB headroom.
+        "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+        "OMP_NUM_THREADS": "8",
+        "MKL_NUM_THREADS": "8",
+    }
+
+    @staticmethod
+    def precision_profile(quant_config: dict | None) -> str:
+        """``nvfp4`` for a ModelOpt NVFP4 checkpoint, else ``mxfp8``."""
+        if quant_config and quant_config.get("quant_method") == "modelopt_fp4":
+            if quant_config.get("quant_algo") not in ("NVFP4", "MIXED_PRECISION"):
+                raise ValueError(
+                    "raon-1-mini serves ModelOpt NVFP4 or MIXED_PRECISION "
+                    f"checkpoints, not {quant_config.get('quant_algo')}"
+                )
+            return "nvfp4"
+        return "mxfp8"
+
+    @classmethod
+    def verify_and_update_model_config(cls, model_config: "ModelConfig") -> None:
+        import os
+
+        hf_config = model_config.hf_config
+        quant_config = getattr(hf_config, "quantization_config", None)
+        profile = cls.precision_profile(quant_config)
+        # Recorded before the engine processes start, which inherit it and
+        # import vllm.models.raon1_mini with this profile's defaults.
+        os.environ["RAON_PRECISION_PROFILE"] = profile
+        import vllm.models.raon1_mini as raon
+
+        raon.apply_precision_profile(profile)
+        if profile == "nvfp4":
+            # vLLM's ModelOpt methods (Marlin) own every quantized layer.
+            return
+        # The checkpoint stores routed experts as MXFP8 with E8M0 block scales.
+        # The model packs them for its own grouped W8A8 kernels; vLLM's generic
+        # MXFP8 method must not claim any layer. Keep the declaration for the
+        # loader.
+        if quant_config is not None:
+            hf_config.raon_expert_quantization = dict(quant_config)
+            del hf_config.quantization_config
+            model_config.model_arch_config.quantization_config = None
+
+    @classmethod
+    def verify_and_update_config(cls, vllm_config: "VllmConfig") -> None:
+        import os
+
+        from vllm.v1.attention.backends.mla.prefill.registry import (
+            MLAPrefillBackendEnum,
+        )
+        from vllm.v1.attention.backends.registry import AttentionBackendEnum
+
+        scheduler_config = vllm_config.scheduler_config
+        for key, value in cls.PROCESS_ENV.items():
+            os.environ.setdefault(key, value)
+        # Overlap the shared experts with the routed ones for the whole batch.
+        os.environ.setdefault(
+            "VLLM_SHARED_EXPERTS_STREAM_TOKEN_THRESHOLD",
+            str(scheduler_config.max_num_batched_tokens),
+        )
+
+        attention_config = vllm_config.attention_config
+        attention_config.backend_per_kind.setdefault(
+            "mla_attention", AttentionBackendEnum.FLASHINFER_MLA
+        )
+        if attention_config.mla_prefill_backend is None:
+            attention_config.mla_prefill_backend = MLAPrefillBackendEnum.TRTLLM_RAGGED
+        attention_config.use_prefill_query_quantization = True
+
+        nvfp4 = os.environ.get("RAON_PRECISION_PROFILE") == "nvfp4"
+        kernel_config = vllm_config.kernel_config
+        if kernel_config.ir_op_priority.rms_norm is None:
+            kernel_config.ir_op_priority.rms_norm = ["vllm_c", "native"]
+        if kernel_config.moe_backend == "auto":
+            # NVFP4: FlashInfer TRT-LLM MoE gives wrong SiTU outputs and
+            # CUTLASS rejects SiTU; Marlin (W4A16) is the qualified path.
+            kernel_config.moe_backend = "marlin" if nvfp4 else "triton"
+        if nvfp4:
+            if kernel_config.linear_backend == "auto":
+                kernel_config.linear_backend = "marlin"
+            parallel_config = vllm_config.parallel_config
+            if parallel_config.tensor_parallel_size * parallel_config.data_parallel_size > 1:
+                raise ValueError("raon-1-mini NVFP4 serving is qualified on TP1 only")
+
+        compilation_config = vllm_config.compilation_config
+        if not compilation_config.custom_ops:
+            compilation_config.custom_ops = ["none", "+fused_rms_norm_gated"]
+
+        # The MoE GEMM arenas are pinned for every captured decode size, so
+        # each decode step (all sequences plus their drafts) must replay a
+        # captured graph.
+        spec_config = vllm_config.speculative_config
+        num_drafts = spec_config.num_speculative_tokens if spec_config else 0
+        decode_tokens = scheduler_config.max_num_seqs * (1 + num_drafts)
+        if compilation_config.max_cudagraph_capture_size is None:
+            compilation_config.max_cudagraph_capture_size = decode_tokens
+        import vllm.models.raon1_mini as raon
+
+        arena_key = "RAON_MXFP8_ARENA_PIN_MAX_TOKENS"
+        if (
+            not nvfp4
+            and arena_key in raon._DEFAULTED
+            and decode_tokens > int(os.environ[arena_key])
+        ):
+            # More draft tokens (e.g. --spec-tokens 7) need a pinned MoE arena
+            # for every decode step; the package default covers k3 at 128 seqs.
+            os.environ[arena_key] = raon._DEFAULTED[arena_key] = str(decode_tokens)
+        arena_tokens = int(os.environ.get(arena_key, "512"))
+        if not nvfp4 and not (
+            decode_tokens
+            <= compilation_config.max_cudagraph_capture_size
+            <= arena_tokens
+        ):
+            raise ValueError(
+                "raon-1-mini needs max_cudagraph_capture_size between "
+                f"max_num_seqs x (1 + draft tokens) = {decode_tokens} and "
+                f"RAON_MXFP8_ARENA_PIN_MAX_TOKENS = {arena_tokens}; got "
+                f"{compilation_config.max_cudagraph_capture_size}"
+            )
+
+        # DFlash drafts are sampled from the draft distribution, which keeps
+        # acceptance high at the recommended temperature 1.0.
+        if spec_config is not None and spec_config.method == "dflash":
+            spec_config.draft_sample_method = "probabilistic"
+        vllm_config.parallel_config.disable_custom_all_reduce = True
+
+        if (
+            os.environ.get("RAON_MOE_MXFP8_W8A8_GEMM_MODE") == "4"
+            and os.environ["VLLM_MOE_SKIP_PADDING"] != "0"
+        ):
+            raise ValueError(
+                "raon-1-mini mode-4 MoE requires VLLM_MOE_SKIP_PADDING=0: the "
+                "skip-padding router returns expert -1 for dummy and capture rows"
+            )
+        if (
+            os.environ.get("RAON_MOE_MXFP8_W8A8_GEMM_MODE") == "4"
+            and os.environ.get("RAON_SWAB_SITU_EPILOGUE", "0") != "1"
+        ):
+            raise ValueError(
+                "raon-1-mini mode-4 MoE requires RAON_SWAB_SITU_EPILOGUE=1: the "
+                "unfused GEMM13 SiTU chain returns wrong outputs after a larger MoE call"
+            )
+        from vllm.models.raon1_mini.mxfp8_loader import validate_compact_loading
+
+        validate_compact_loading()
+
+
 class GptOssForCausalLMConfig(VerifyAndUpdateConfig):
     @staticmethod
     def verify_and_update_model_config(model_config: "ModelConfig") -> None:
@@ -942,6 +1111,7 @@ MODELS_CONFIG_MAP: dict[str, type[VerifyAndUpdateConfig]] = {
     "Qwen3_5ForConditionalGeneration": Qwen3_5ForConditionalGenerationConfig,
     "Qwen3_5MoeForCausalLM": Qwen3_5ForCausalLMConfig,
     "Qwen3_5MoeForConditionalGeneration": Qwen3_5ForConditionalGenerationConfig,
+    "Raon1MiniForCausalLM": Raon1MiniForCausalLMConfig,
     "UnlimitedOCRForCausalLM": UnlimitedOCRForCausalLMConfig,
     "VoyageQwen3BidirectionalEmbedModel": VoyageQwen3BidirectionalEmbedModelConfig,
     "XLMRobertaModel": JinaRobertaModelConfig,

@@ -114,6 +114,10 @@ _TOOL_PARSERS_TO_REGISTER = {
         "kimi_k3_tool_parser",
         "KimiK3ToolParser",
     ),
+    "raon_1": (
+        "raon_1_tool_parser",
+        "RaonToolParser",
+    ),
     "llama3_json": (
         "llama_tool_parser",
         "Llama3JsonToolParser",

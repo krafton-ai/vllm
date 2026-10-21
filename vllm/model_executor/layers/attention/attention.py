@@ -634,7 +634,7 @@ class Attention(nn.Module, AttentionLayerBase):
             sw_block_size = _largest_kernel_block_within(
                 self.attn_backend, sw_per_token, shared_page, block_size
             )
-            return SlidingWindowSpec(
+            spec = SlidingWindowSpec(
                 block_size=sw_block_size,
                 num_kv_heads=self.num_kv_heads,
                 head_size=self.head_size,
@@ -644,6 +644,16 @@ class Attention(nn.Module, AttentionLayerBase):
                 sliding_window=self.sliding_window,
                 page_size_padded=shared_page,
             )
+            model_config = vllm_config.model_config
+            if model_config is not None and model_config.hf_config.model_type == (
+                "raon1_mini"
+            ):
+                from vllm.models.raon1_mini.dflash_cache_alignment import (
+                    align_draft_window,
+                )
+
+                spec = align_draft_window(spec, vllm_config)
+            return spec
         else:
             return FullAttentionSpec(
                 block_size=block_size,

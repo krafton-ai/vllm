@@ -45,9 +45,18 @@ def load_dflash_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Mo
         ),
     )
     with set_model_tag("dflash_head"):
-        dflash_model = get_model(
-            vllm_config=draft_vllm_config, model_config=draft_model_config
-        )
+        if vllm_config.model_config.hf_config.model_type == "raon1_mini":
+            from vllm.models.raon1_mini.dflash_parallel import get_draft_model
+
+            dflash_model = get_draft_model(
+                get_model,
+                vllm_config=draft_vllm_config,
+                model_config=draft_model_config,
+            )
+        else:
+            dflash_model = get_model(
+                vllm_config=draft_vllm_config, model_config=draft_model_config
+            )
 
     target_language_model = (
         target_model.get_language_model()

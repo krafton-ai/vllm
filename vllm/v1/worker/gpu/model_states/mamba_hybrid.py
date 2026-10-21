@@ -100,8 +100,13 @@ class MambaHybridModelState(DefaultModelState):
         self.num_accepted_tokens_gpu[req_index].fill_(1)
         if self._align_mode:
             # Seed the running state block from the resumed/prefilled position.
+            # raon-1-mini's KDA state columns are mamba_block_size wide, which
+            # can differ from the attention block size under DFlash.
+            block_size = self.cache_config.block_size
+            if self.vllm_config.model_config.hf_config.model_type == "raon1_mini":
+                block_size = self.cache_config.mamba_block_size or block_size
             self._mamba_state_idx_gpu[req_index].fill_(
-                (new_req_data.num_computed_tokens - 1) // self.cache_config.block_size
+                (new_req_data.num_computed_tokens - 1) // block_size
             )
 
     def _get_mamba_group_info(

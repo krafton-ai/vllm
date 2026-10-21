@@ -44,6 +44,7 @@ class DFlashSpeculator(DraftModelSpeculator):
 
         # Each request emits exactly (bonus + N mask) query tokens per step.
         self.num_query_per_req = 1 + self.num_speculative_steps
+        self.raon1_mini = vllm_config.model_config.hf_config.model_type == "raon1_mini"
 
         self.parallel_drafting_token_id = get_parallel_drafting_token_id(
             self.draft_model_config.hf_config
@@ -289,6 +290,10 @@ class DFlashSpeculator(DraftModelSpeculator):
         if not self.draft_attn_layer_names:
             return None
         assert num_query_per_req is None  # Omitted for DFlash, read from self instead
+        if self.raon1_mini:
+            from vllm.models.raon1_mini.dflash_cache import clear_expired_prefix
+
+            clear_expired_prefix(self, num_reqs)
         return super()._build_draft_attn_metadata(
             num_reqs,
             num_reqs_padded,
@@ -328,6 +333,12 @@ class DFlashSpeculator(DraftModelSpeculator):
         mm_inputs: tuple[list[torch.Tensor], torch.Tensor] | None = None,
         is_profile: bool = False,
     ) -> torch.Tensor:
+        if self.raon1_mini:
+            from vllm.models.raon1_mini.dflash_draft_seed import (
+                independent_draft_seeds,
+            )
+
+            seeds = independent_draft_seeds(self, seeds, dummy_run)
         num_reqs = input_batch.num_reqs
         num_target_tokens = input_batch.num_tokens
         num_query_tokens = num_reqs * self.num_query_per_req

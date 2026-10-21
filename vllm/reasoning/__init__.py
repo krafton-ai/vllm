@@ -92,6 +92,10 @@ _REASONING_PARSERS_TO_REGISTER = {
         "kimi_k3_reasoning_parser",
         "KimiK3ReasoningParser",
     ),
+    "raon_1": (
+        "raon_1_reasoning_parser",
+        "RaonReasoningParser",
+    ),
     "mimo": (
         "qwen3_engine_reasoning_parser",
         "Qwen3ParserReasoningAdapter",

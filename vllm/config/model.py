@@ -1709,6 +1709,11 @@ class ModelConfig:
         else:
             diff_sampling_param = {}
 
+        # The OpenAI request schemas fall back to this server default when a
+        # request omits presence_penalty.
+        if config.get("presence_penalty") is not None:
+            diff_sampling_param["presence_penalty"] = config["presence_penalty"]
+
         if diff_sampling_param and src != "vllm":
             logger.warning_once(
                 "Default vLLM sampling parameters have been overridden by %s: `%s`. "

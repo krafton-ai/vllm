@@ -60,7 +60,7 @@ class CompletionRequest(OpenAIBaseModel):
     logprobs: int | None = None
     max_tokens: int | None = 16
     n: int = 1
-    presence_penalty: float | None = 0.0
+    presence_penalty: float | None = None
     seed: int | None = Field(None, ge=_INT64_MIN, le=_INT64_MAX)
     stop: StopParam = []
     stream: bool | None = False
@@ -357,6 +357,10 @@ class CompletionRequest(OpenAIBaseModel):
         if prompt_logprobs is None and self.echo:
             prompt_logprobs = self.logprobs
 
+        # Omitted or null: the server default (generation_config), else 0.0.
+        if (presence_penalty := self.presence_penalty) is None:
+            presence_penalty = default_sampling_params.get("presence_penalty", 0.0)
+
         echo_without_generation = self.echo and self.max_tokens == 0
 
         extra_args: dict[str, Any] = self.vllm_xargs if self.vllm_xargs else {}
@@ -368,7 +372,7 @@ class CompletionRequest(OpenAIBaseModel):
             extra_args["ec_transfer_params"] = self.ec_transfer_params
         return SamplingParams.from_optional(
             n=self.n,
-            presence_penalty=self.presence_penalty,
+            presence_penalty=presence_penalty,
             frequency_penalty=self.frequency_penalty,
             repetition_penalty=repetition_penalty,
             temperature=temperature,

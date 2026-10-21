@@ -363,7 +363,50 @@ class Scheduler(SchedulerInterface):
         # async KV loads). Their remaining-block reservation gates async loads.
         self._inflight_prefills: set[Request] = set()
 
+        model_config = vllm_config.model_config
+        self._raon1_mini = (
+            model_config is not None
+            and model_config.hf_config.model_type == "raon1_mini"
+        )
+        if self._raon1_mini and self.cache_config.enable_prefix_caching:
+            from vllm.models.raon1_mini.dflash_cache_alignment import (
+                keep_hits_on_block_grid,
+                raon_dflash,
+            )
+
+            if raon_dflash(vllm_config):
+                keep_hits_on_block_grid(self)
+
     def _mamba_block_aligned_split(
+        self,
+        request: Request,
+        num_new_tokens: int,
+        num_new_local_computed_tokens: int = 0,
+        num_external_computed_tokens: int = 0,
+    ) -> int:
+        if self._raon1_mini:
+            # raon-1-mini caches KDA states every mamba_block_size tokens,
+            # which can differ from the attention block size under DFlash.
+            cache_config = self.cache_config
+            block_size = cache_config.block_size
+            cache_config.block_size = cache_config.mamba_block_size or block_size
+            try:
+                return self._mamba_block_aligned_split_impl(
+                    request,
+                    num_new_tokens,
+                    num_new_local_computed_tokens,
+                    num_external_computed_tokens,
+                )
+            finally:
+                cache_config.block_size = block_size
+        return self._mamba_block_aligned_split_impl(
+            request,
+            num_new_tokens,
+            num_new_local_computed_tokens,
+            num_external_computed_tokens,
+        )
+
+    def _mamba_block_aligned_split_impl(
         self,
         request: Request,
         num_new_tokens: int,
