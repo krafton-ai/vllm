@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Adaptive FlashKDA value-split selection for pure-prefill KDA steps.
 
 RAON_KDA_PREFILL_VSPLIT=adaptive (default off) chooses FlashKDA's existing
@@ -21,7 +23,7 @@ _ENV = "RAON_KDA_PREFILL_VSPLIT"
 _BUILD_DIR_ENV = "RAON_KDA_VSPLIT_BUILD_DIR"
 _SOURCE = os.path.join(os.path.dirname(__file__), "vendored", "flashkda-vsplit")
 _module_loaded = False
-_seen = set()
+_seen: set[tuple[int, int, int]] = set()
 
 
 def enabled() -> bool:
@@ -52,24 +54,61 @@ def _load_module():
 
     # FlashInfer's pinned CUTLASS headers; the op uses only cute/cutlass headers.
     flashinfer = importlib.util.find_spec("flashinfer")
-    cutlass = os.path.join(flashinfer.submodule_search_locations[0], "data", "cutlass", "include")
+    if flashinfer is None or not flashinfer.submodule_search_locations:
+        raise RuntimeError(
+            f"{_ENV}=adaptive needs installed FlashInfer CUTLASS headers"
+        )
+    cutlass = os.path.join(
+        flashinfer.submodule_search_locations[0], "data", "cutlass", "include"
+    )
     if not os.path.isdir(cutlass):
         raise RuntimeError(f"{_ENV}=adaptive needs CUTLASS headers at {cutlass}")
     build_dir = os.environ.get(_BUILD_DIR_ENV)
     if not build_dir:
-        raise RuntimeError(f"{_ENV}=adaptive requires {_BUILD_DIR_ENV} (set by vllm.models.raon1_mini)")
+        raise RuntimeError(
+            f"{_ENV}=adaptive requires {_BUILD_DIR_ENV} (set by vllm.models.raon1_mini)"
+        )
+    major, minor = torch.cuda.get_device_capability()
+    if major == 10:
+        arch = "100f"
+    elif (major, minor) == (12, 0):
+        arch = "120a"
+    else:
+        raise ValueError(
+            f"{_ENV}=adaptive supports SM10x and SM120, got SM{major}{minor}"
+        )
+    build_dir = os.path.join(build_dir, arch)
     os.makedirs(build_dir, exist_ok=True)
-    flags = ["-O3", "-DNDEBUG", "-DUSE_CUDA", "-DTORCH_TARGET_VERSION=0x020B000000000000ULL"]
-    load(name="raon_flashkda_vsplit",
-         sources=[os.path.join(_SOURCE, name) for name in
-                  ("registration.cpp", "flash_kda.cpp", os.path.join("smxx", "fwd_launch.cu"))],
-         extra_include_paths=[_SOURCE, cutlass],
-         extra_cflags=flags,
-         extra_cuda_cflags=flags + ["--use_fast_math", "--expt-relaxed-constexpr",
-                                    "--expt-extended-lambda", "--threads=4",
-                                    "-gencode=arch=compute_100f,code=sm_100f"],
-         build_directory=build_dir, is_python_module=False,
-         verbose=os.environ.get("RAON_KDA_VSPLIT_VERBOSE", "0") == "1")
+    flags = [
+        "-O3",
+        "-DNDEBUG",
+        "-DUSE_CUDA",
+        "-DTORCH_TARGET_VERSION=0x020B000000000000ULL",
+    ]
+    load(
+        name="raon_flashkda_vsplit",
+        sources=[
+            os.path.join(_SOURCE, name)
+            for name in (
+                "registration.cpp",
+                "flash_kda.cpp",
+                os.path.join("smxx", "fwd_launch.cu"),
+            )
+        ],
+        extra_include_paths=[_SOURCE, cutlass],
+        extra_cflags=flags,
+        extra_cuda_cflags=flags
+        + [
+            "--use_fast_math",
+            "--expt-relaxed-constexpr",
+            "--expt-extended-lambda",
+            "--threads=4",
+            f"-gencode=arch=compute_{arch},code=sm_{arch}",
+        ],
+        build_directory=build_dir,
+        is_python_module=False,
+        verbose=os.environ.get("RAON_KDA_VSPLIT_VERBOSE", "0") == "1",
+    )
     assert hasattr(torch.ops.raon_flashkda_vsplit, "fwd")
     _module_loaded = True
 
@@ -87,7 +126,9 @@ def attach_mode(builder, common_attn_metadata, metadata) -> None:
         builder._raon_kda_vsplit_sms = sms
     heads = builder.vllm_config.model_config.hf_config.linear_attn_config["num_heads"]
     lengths = common_attn_metadata.query_start_loc_cpu.diff().tolist()
-    metadata._raon_kda_vsplit_mode = select_mode(lengths, metadata.num_spec_decodes, heads, sms)
+    metadata._raon_kda_vsplit_mode = select_mode(
+        lengths, metadata.num_spec_decodes, heads, sms
+    )
 
 
 def validate(vllm_config) -> None:
@@ -99,15 +140,42 @@ def validate(vllm_config) -> None:
     _load_module()
 
 
-def prefill(metadata, *, q, k, v, g, beta, A_log, dt_bias, lower_bound,
-            initial_state, cu_seqlens, out, final_state, workspace, stock):
+def prefill(
+    metadata,
+    *,
+    q,
+    k,
+    v,
+    g,
+    beta,
+    A_log,
+    dt_bias,
+    lower_bound,
+    initial_state,
+    cu_seqlens,
+    out,
+    final_state,
+    workspace,
+    stock,
+):
     """Drop-in for vLLM's _flashkda_prefill with the per-step forced variant."""
     mode = getattr(metadata, "_raon_kda_vsplit_mode", -1)
     if mode < 0:
-        return stock(q=q, k=k, v=v, g=g, beta=beta, A_log=A_log, dt_bias=dt_bias,
-                     lower_bound=lower_bound, initial_state=initial_state,
-                     cu_seqlens=cu_seqlens, out=out, final_state=final_state,
-                     workspace=workspace)
+        return stock(
+            q=q,
+            k=k,
+            v=v,
+            g=g,
+            beta=beta,
+            A_log=A_log,
+            dt_bias=dt_bias,
+            lower_bound=lower_bound,
+            initial_state=initial_state,
+            cu_seqlens=cu_seqlens,
+            out=out,
+            final_state=final_state,
+            workspace=workspace,
+        )
     import torch
 
     signature = (mode, q.shape[1], cu_seqlens.numel() - 1)
@@ -116,8 +184,20 @@ def prefill(metadata, *, q, k, v, g, beta, A_log, dt_bias, lower_bound,
         print(f"[kda-vsplit] mode,tokens,sequences={signature}", flush=True)
     # Same argument preparation as vLLM's stock _flashkda_prefill.
     torch.ops.raon_flashkda_vsplit.fwd(
-        q.contiguous(), k.contiguous(), v.contiguous(), g.contiguous(), beta,
-        q.shape[-1] ** -0.5, out, workspace, A_log.contiguous(),
-        dt_bias.view(-1, q.shape[-1]).contiguous(), lower_bound, mode,
-        initial_state.contiguous(), final_state, cu_seqlens.contiguous())
+        q.contiguous(),
+        k.contiguous(),
+        v.contiguous(),
+        g.contiguous(),
+        beta,
+        q.shape[-1] ** -0.5,
+        out,
+        workspace,
+        A_log.contiguous(),
+        dt_bias.view(-1, q.shape[-1]).contiguous(),
+        lower_bound,
+        mode,
+        initial_state.contiguous(),
+        final_state,
+        cu_seqlens.contiguous(),
+    )
     return out, final_state

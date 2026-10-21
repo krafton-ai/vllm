@@ -767,3 +767,76 @@ def test_flashkda_correctness():
 
     assert_close("o", expected_out, actual_out, 0.01)
     assert_close("ht", expected_state, actual_state, 0.01)
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability() != (12, 0),
+    reason="Raon V-split SM120 port",
+)
+@pytest.mark.parametrize("lengths", [[128], [3, 16, 33, 129], [1, 17]])
+@pytest.mark.parametrize("has_state", [False, True])
+@pytest.mark.parametrize("mode", [0, 1])
+@torch.inference_mode()
+def test_raon_vsplit_sm120_matches_stock_output_and_recurrent_state(
+    lengths, has_state, mode
+):
+    import vllm._flashkda_C  # noqa: F401
+
+    from vllm.models.raon1_mini.kda_vsplit import _load_module
+
+    _load_module()
+    torch.manual_seed(25)
+    n, t, heads, dim = len(lengths), sum(lengths), 4, 128
+    shape = (1, t, heads, dim)
+    q, k, v, g = [
+        torch.randn(shape, device="cuda", dtype=torch.bfloat16) for _ in range(4)
+    ]
+    beta = torch.randn((1, t, heads), device="cuda", dtype=torch.bfloat16)
+    a_log = torch.randn(heads, device="cuda")
+    dt_bias = torch.randn(heads, dim, device="cuda")
+    cu = torch.tensor([0, *lengths], dtype=torch.int32, device="cuda").cumsum(
+        0, dtype=torch.int32
+    )
+    state = torch.randn(n, heads, dim, dim, device="cuda")
+    if not has_state:
+        state.zero_()
+    workspace = torch.empty(
+        heads * ((t + 15) // 16 + n) * 13824, device="cuda", dtype=torch.uint8
+    )
+    reference, output = torch.empty_like(q), torch.empty_like(q)
+    reference_state, output_state = torch.empty_like(state), torch.empty_like(state)
+    torch.ops._flashkda_C.fwd(
+        q,
+        k,
+        v,
+        g,
+        beta,
+        dim**-0.5,
+        reference,
+        workspace,
+        a_log,
+        dt_bias,
+        -5.0,
+        state,
+        reference_state,
+        cu,
+    )
+    torch.ops.raon_flashkda_vsplit.fwd(
+        q,
+        k,
+        v,
+        g,
+        beta,
+        dim**-0.5,
+        output,
+        workspace,
+        a_log,
+        dt_bias,
+        -5.0,
+        mode,
+        state,
+        output_state,
+        cu,
+    )
+    torch.testing.assert_close(output, reference, atol=0, rtol=0)
+    torch.testing.assert_close(output_state, reference_state, atol=0, rtol=0)

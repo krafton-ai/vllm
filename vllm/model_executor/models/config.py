@@ -373,7 +373,7 @@ class KimiK3ForConditionalGenerationConfig(VerifyAndUpdateConfig):
 
 
 class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
-    """Serve raon-1-mini with its qualified B300 configuration by default.
+    """Serve raon-1-mini with attention defaults for SM10x and SM120.
 
     The release was qualified with one serving configuration; the settings the
     command line leaves unset take its values, so a plain ``vllm serve`` with
@@ -412,18 +412,14 @@ class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
             return "nvfp4"
         return "mxfp8"
 
-    # Compute capabilities the preview was tested on (B300).
+    # B300 was tested with both checkpoint profiles; RTX 5090 with NVFP4.
     TESTED_CAPABILITIES = {(10, 3)}
 
     @classmethod
     def check_gpu(cls) -> None:
-        """Warn when the GPU is not one the preview was tested on.
+        """Warn for untested GPU and checkpoint-profile combinations."""
+        import os
 
-        Nothing is blocked. The defaults force FLASHINFER_MLA / TRTLLM_RAGGED
-        attention and tcgen05 grouped MoE kernels, which exist only on
-        sm_100-family GPUs, so the warning names them for anyone who hits a
-        later error on another GPU (e.g. GB10 sm_121, RTX 5090 sm_120).
-        """
         from vllm.platforms import current_platform
 
         if not current_platform.is_cuda():
@@ -432,17 +428,20 @@ class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
         if capability is None:
             return
         cap = (capability.major, capability.minor)
-        if cap in cls.TESTED_CAPABILITIES:
+        profile = os.environ.get("RAON_PRECISION_PROFILE", "mxfp8")
+        if cap in cls.TESTED_CAPABILITIES or (cap == (12, 0) and profile == "nvfp4"):
             return
-        tested = ", ".join(f"sm_{a}{b}" for a, b in sorted(cls.TESTED_CAPABILITIES))
         logger.warning(
-            "raon-1-mini preview has only been tested on NVIDIA B300 (%s); "
-            "detected %s (sm_%d%d). It may work, but this GPU is untested. "
-            "The default serving configuration uses FLASHINFER_MLA / "
-            "TRTLLM_RAGGED attention and grouped MoE kernels built for "
-            "sm_100-family GPUs; if startup fails, those are the first "
-            "settings to override.",
-            tested, current_platform.get_device_name(), cap[0], cap[1],
+            "raon-1-mini preview detected %s (sm_%d%d), profile %s. "
+            "This GPU/profile combination is untested. Tested configurations "
+            "are B300 (sm_103) and RTX 5090 (sm_120, NVFP4). "
+            "SM120 selects TRITON_MLA / FLASH_ATTN attention; other GPUs "
+            "default to FLASHINFER_MLA / TRTLLM_RAGGED. The MXFP8 grouped "
+            "MoE path requires sm_100-family kernels.",
+            current_platform.get_device_name(),
+            cap[0],
+            cap[1],
+            profile,
         )
 
     @classmethod
@@ -489,13 +488,24 @@ class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
             str(scheduler_config.max_num_batched_tokens),
         )
 
+        from vllm.platforms import current_platform
+
+        sm120 = current_platform.is_device_capability(120)
         attention_config = vllm_config.attention_config
         attention_config.backend_per_kind.setdefault(
-            "mla_attention", AttentionBackendEnum.FLASHINFER_MLA
+            "mla_attention",
+            AttentionBackendEnum.TRITON_MLA
+            if sm120
+            else AttentionBackendEnum.FLASHINFER_MLA,
         )
         if attention_config.mla_prefill_backend is None:
-            attention_config.mla_prefill_backend = MLAPrefillBackendEnum.TRTLLM_RAGGED
-        attention_config.use_prefill_query_quantization = True
+            attention_config.mla_prefill_backend = (
+                MLAPrefillBackendEnum.FLASH_ATTN
+                if sm120
+                else MLAPrefillBackendEnum.TRTLLM_RAGGED
+            )
+        if not sm120:
+            attention_config.use_prefill_query_quantization = True
 
         nvfp4 = os.environ.get("RAON_PRECISION_PROFILE") == "nvfp4"
         kernel_config = vllm_config.kernel_config
@@ -509,7 +519,11 @@ class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
             if kernel_config.linear_backend == "auto":
                 kernel_config.linear_backend = "marlin"
             parallel_config = vllm_config.parallel_config
-            if parallel_config.tensor_parallel_size * parallel_config.data_parallel_size > 1:
+            if (
+                parallel_config.tensor_parallel_size
+                * parallel_config.data_parallel_size
+                > 1
+            ):
                 raise ValueError("raon-1-mini NVFP4 serving is qualified on TP1 only")
 
         compilation_config = vllm_config.compilation_config
@@ -568,7 +582,8 @@ class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
         ):
             raise ValueError(
                 "raon-1-mini mode-4 MoE requires RAON_SWAB_SITU_EPILOGUE=1: the "
-                "unfused GEMM13 SiTU chain returns wrong outputs after a larger MoE call"
+                "unfused GEMM13 SiTU chain returns wrong outputs "
+                "after a larger MoE call"
             )
         from vllm.models.raon1_mini.mxfp8_loader import validate_compact_loading
 

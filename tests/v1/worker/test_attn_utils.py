@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import pytest
 import torch
 
 from vllm.v1.kv_cache_interface import (
@@ -342,3 +343,37 @@ def test_reshape_kv_first_kv_cache_keeps_layout_without_mamba():
     # Nothing else indexes this allocation by page, so K and V stay split into
     # one contiguous half each.
     assert kv_cache[1, 0].storage_offset() == num_blocks * 16 * 1 * 2
+
+
+@pytest.mark.parametrize("subblocks", [1, 2, 20, 26])
+@pytest.mark.parametrize("backend", [FakeFlashAttentionBackend, FakeDiffKVBackend])
+def test_padded_logical_pages_subdivide_without_overlap(subblocks, backend):
+    """Kernel blocks inside one logical page must not skip full logical pages."""
+    native = 4
+    pages = 3
+    spec = FullAttentionSpec(
+        block_size=native * subblocks,
+        num_kv_heads=1,
+        head_size=2,
+        dtype=torch.float32,
+        page_size_padded=96 * subblocks,
+    )
+    raw = torch.zeros(pages * spec.page_size_bytes, dtype=torch.int8)
+    group = AttentionGroup(
+        backend=backend,
+        layer_names=["layer"],
+        kv_cache_spec=spec,
+        kv_cache_group_id=0,
+    )
+    view = _reshape_kv_cache([group], {"layer": raw}, "auto", [native], {})["layer"]
+    assert view.shape[0] == pages * subblocks
+    for index in range(pages * subblocks):
+        view[index].fill_(index + 1)
+    payload = native * 1 * 2 * 2 * 4
+    for index in range(pages * subblocks):
+        offset = index * 96
+        expected = torch.full((payload // 4,), index + 1, dtype=torch.float32)
+        torch.testing.assert_close(
+            raw[offset : offset + payload].view(torch.float32), expected
+        )
+        assert not raw[offset + payload : offset + 96].any()

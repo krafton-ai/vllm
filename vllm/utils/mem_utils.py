@@ -13,6 +13,7 @@ import torch.types
 
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
+from vllm.platforms.interface import in_wsl
 
 from .mem_constants import GiB_bytes, KiB_bytes, MiB_bytes
 
@@ -53,14 +54,19 @@ _UMA_MIN_RELEASE_BYTES = 512 * MiB_bytes
 
 
 def release_device_memory_under_pressure(device: torch.device) -> bool:
-    """On integrated (UMA) GPUs, release caching-allocator memory back to the
-    OS when system memory pressure is high. The OS may start thrashing before
-    an allocation failure would trigger PyTorch's own cache release.
+    """Release unused allocator pages under UMA or WSL memory pressure.
+
+    These platforms can fail or thrash before an allocation failure triggers
+    PyTorch's own cache release. Called between weight-repacking operations.
 
     Returns:
         True if memory was released.
     """
-    if device.type != "cuda" or not current_platform.is_integrated_gpu(device.index):
+    if device.type != "cuda":
+        return False
+    integrated = current_platform.is_integrated_gpu(device.index)
+    wsl = current_platform.is_cuda() and in_wsl()
+    if not integrated and not wsl:
         return False
 
     releasable = torch.accelerator.memory_reserved(
@@ -69,9 +75,15 @@ def release_device_memory_under_pressure(device: torch.device) -> bool:
     if releasable < _UMA_MIN_RELEASE_BYTES:
         return False
 
-    # cudaMemGetInfo underreports free memory on UMA, see MemorySnapshot.measure
-    mem = psutil.virtual_memory()
-    if mem.available > (1 - _UMA_PRESSURE_THRESHOLD) * mem.total:
+    if integrated:
+        # cudaMemGetInfo underreports free memory on UMA.
+        mem = psutil.virtual_memory()
+        free, total = mem.available, mem.total
+    else:
+        # WDDM residency can fail with "device not ready" before CUDA reports
+        # OOM, so the allocator does not retry after releasing cached pages.
+        free, total = torch.accelerator.get_memory_info(device)
+    if free > (1 - _UMA_PRESSURE_THRESHOLD) * total:
         return False
 
     torch.accelerator.synchronize(device)

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Align Raon MLA/KDA pages with the DFlash draft's native KV page unit.
 
 APC OFF (mamba cache mode "none"): the shared page is the smallest multiple of
@@ -20,8 +22,10 @@ import math
 
 
 def common_page_size(minimum, primary_unit, draft_unit):
-    if any(type(value) is not int or value <= 0
-           for value in (minimum, primary_unit, draft_unit)):
+    if any(
+        type(value) is not int or value <= 0
+        for value in (minimum, primary_unit, draft_unit)
+    ):
         raise ValueError("Cache page sizes must be positive integers")
     unit = math.lcm(primary_unit, draft_unit)
     return ((minimum + unit - 1) // unit) * unit
@@ -29,10 +33,14 @@ def common_page_size(minimum, primary_unit, draft_unit):
 
 def draft_block_size(target_block, page, unit, bytes_per_token):
     """Largest multiple of ``unit`` that divides ``target_block`` and fits ``page``."""
-    if any(type(value) is not int or value <= 0
-           for value in (target_block, page, unit, bytes_per_token)):
+    if any(
+        type(value) is not int or value <= 0
+        for value in (target_block, page, unit, bytes_per_token)
+    ):
         raise ValueError("Cache block and page sizes must be positive integers")
-    for block in range(min(target_block, page // bytes_per_token) // unit * unit, 0, -unit):
+    for block in range(
+        min(target_block, page // bytes_per_token) // unit * unit, 0, -unit
+    ):
         if target_block % block == 0:
             return block
     raise ValueError("No draft block divides the target block and fits the shared page")
@@ -41,8 +49,11 @@ def draft_block_size(target_block, page, unit, bytes_per_token):
 def raon_dflash(config):
     """raon-1-mini served with a DFlash drafter."""
     spec = config.speculative_config
-    return (spec is not None and spec.method == "dflash"
-            and config.model_config.hf_config.model_type == "raon1_mini")
+    return (
+        spec is not None
+        and spec.method == "dflash"
+        and config.model_config.hf_config.model_type == "raon1_mini"
+    )
 
 
 def align_draft_pages(platform, config, primary_backend):
@@ -61,14 +72,21 @@ def align_draft_pages(platform, config, primary_backend):
     spec = config.speculative_config
     cache = config.cache_config
     prefix_caching = bool(cache.enable_prefix_caching)
-    if (cache.cache_dtype != "fp8_e4m3" or cache.user_specified_block_size
-            or cache.mamba_cache_mode != ("align" if prefix_caching else "none")
-            or (prefix_caching and cache.user_specified_mamba_block_size)):
-        raise ValueError("Raon draft-page alignment requires FP8 KV, automatic block sizing and "
-                         "mamba cache mode none with APC OFF or align with APC ON")
+    if (
+        cache.cache_dtype != "fp8_e4m3"
+        or cache.user_specified_block_size
+        or cache.mamba_cache_mode != ("align" if prefix_caching else "none")
+        or (prefix_caching and cache.user_specified_mamba_block_size)
+    ):
+        raise ValueError(
+            "Raon draft-page alignment requires FP8 KV, automatic block sizing and "
+            "mamba cache mode none with APC OFF or align with APC ON"
+        )
     draft = spec.draft_model_config
     if "DFlash2DraftModel" not in draft.hf_config.architectures:
-        raise ValueError("Raon draft-page alignment requires the qualified DFlash2 draft")
+        raise ValueError(
+            "Raon draft-page alignment requires the qualified DFlash2 draft"
+        )
     dtype = STR_DTYPE_TO_TORCH_DTYPE[cache.cache_dtype]
     quant_mode = get_kv_quant_mode(cache.cache_dtype)
     with set_current_vllm_config(config):
@@ -78,7 +96,8 @@ def align_draft_pages(platform, config, primary_backend):
     primary = MLAAttentionSpec(
         block_size=alignment,
         num_kv_heads=config.model_config.get_num_kv_heads(config.parallel_config),
-        head_size=config.model_config.get_head_size(), dtype=dtype,
+        head_size=config.model_config.get_head_size(),
+        dtype=dtype,
         kv_quant_mode=quant_mode,
     )
     draft_config = copy.copy(config)
@@ -91,31 +110,53 @@ def align_draft_pages(platform, config, primary_backend):
     if draft_backend is None:
         raise ValueError("No attention backend found for the DFlash draft")
     with set_current_vllm_config(draft_config):
-        draft_block = draft_backend.get_preferred_block_size(CacheConfig.DEFAULT_BLOCK_SIZE)
+        draft_block = draft_backend.get_preferred_block_size(
+            CacheConfig.DEFAULT_BLOCK_SIZE
+        )
     draft_page = FullAttentionSpec(
         block_size=draft_block,
         num_kv_heads=draft.get_num_kv_heads(draft_config.parallel_config),
-        head_size=draft.get_head_size(), dtype=dtype, kv_quant_mode=quant_mode,
+        head_size=draft.get_head_size(),
+        dtype=dtype,
+        kv_quant_mode=quant_mode,
     )
     bytes_per_token = primary.page_size_bytes // alignment
     if prefix_caching:
         # Keep vLLM's align-mode grid: one T-token page per MLA block and KDA state.
         page = cache.block_size * bytes_per_token
-        if (cache.block_size % alignment or cache.mamba_block_size != cache.block_size
-                or (cache.mamba_page_size_padded or page) != page):
-            raise ValueError("Raon APC alignment requires one MLA/KDA block grid on a full MLA page")
-        block = draft_block_size(cache.block_size, page, draft_block,
-                                 draft_page.page_size_bytes // draft_block)
+        if (
+            cache.block_size % alignment
+            or cache.mamba_block_size != cache.block_size
+            or (cache.mamba_page_size_padded or page) != page
+        ):
+            raise ValueError(
+                "Raon APC alignment requires one MLA/KDA block grid on a full MLA page"
+            )
+        block = draft_block_size(
+            cache.block_size,
+            page,
+            draft_block,
+            draft_page.page_size_bytes // draft_block,
+        )
         cache.mamba_page_size_padded = page
-        print(f"[dflash-cache] prefix_caching=align common_page_bytes={page} "
-              f"target_block={cache.block_size} draft_block={block}", flush=True)
+        print(
+            f"[dflash-cache] prefix_caching=align common_page_bytes={page} "
+            f"target_block={cache.block_size} draft_block={block}",
+            flush=True,
+        )
         return
     minimum = cache.mamba_page_size_padded or cache.block_size * bytes_per_token
-    page = common_page_size(minimum, primary.page_size_bytes, draft_page.page_size_bytes)
+    page = common_page_size(
+        minimum, primary.page_size_bytes, draft_page.page_size_bytes
+    )
     cache.block_size = page // bytes_per_token
     cache.mamba_page_size_padded = page
-    print(f"[dflash-cache] common_page_bytes={page} target_block={cache.block_size} "
-          f"draft_block_after_unification={draft_block * (page // draft_page.page_size_bytes)}", flush=True)
+    print(
+        f"[dflash-cache] common_page_bytes={page} target_block={cache.block_size} "
+        "draft_block_after_unification="
+        f"{draft_block * (page // draft_page.page_size_bytes)}",
+        flush=True,
+    )
 
 
 def align_draft_window(spec, config):
@@ -123,11 +164,26 @@ def align_draft_window(spec, config):
     from vllm.v1.kv_cache_interface import SlidingWindowSpec
 
     cache = config.cache_config
-    if (not isinstance(spec, SlidingWindowSpec) or not cache.enable_prefix_caching
-            or not raon_dflash(config)):
+    if (
+        not isinstance(spec, SlidingWindowSpec)
+        or not cache.enable_prefix_caching
+        or not raon_dflash(config)
+    ):
         return spec
     page = cache.mamba_page_size_padded
-    if not page or cache.mamba_cache_mode != "align" or cache.mamba_block_size != cache.block_size:
+    if not page:
+        # Drafter layer discovery requests specs before worker cache sizing.
+        # All target/draft layers are registered now; establish the common
+        # grid with the same platform routine used during worker setup.
+        from vllm.platforms import current_platform
+
+        current_platform.update_block_size_for_backend(config)
+        page = cache.mamba_page_size_padded
+    if (
+        not page
+        or cache.mamba_cache_mode != "align"
+        or cache.mamba_block_size != cache.block_size
+    ):
         raise ValueError("Raon APC draft window requires the aligned MLA/KDA page")
     bytes_per_token = spec.real_page_size_bytes // spec.block_size
     block = draft_block_size(cache.block_size, page, spec.block_size, bytes_per_token)
@@ -156,7 +212,8 @@ def keep_hits_on_block_grid(scheduler):
     coordinator.enable_partial_hash_hits = False
     coordinator.eagle_group_ids = set()
     if hasattr(coordinator, "attention_groups"):
-        coordinator.attention_groups = [group._replace(use_eagle=False)
-                                        for group in coordinator.attention_groups]
+        coordinator.attention_groups = [
+            group._replace(use_eagle=False) for group in coordinator.attention_groups
+        ]
     for manager in coordinator.single_type_managers:
         manager.use_eagle = False

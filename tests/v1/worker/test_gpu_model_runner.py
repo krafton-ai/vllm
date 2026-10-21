@@ -1832,3 +1832,55 @@ class TestInitFp8KvScalesHybridModels:
         assert (t1 == 0).all()
         assert (t2 == 0).all()
         assert all((t == 0).all() for t in list_entry)
+
+
+@pytest.mark.parametrize("previous_positions", [[2, 0, -1], [1, 2, 0], [-1, -1]])
+def test_async_align_accepted_counts_survive_batch_row_moves(previous_positions):
+    """D2H completion and batch compaction must not remap acceptance twice."""
+    snapshot = np.ones(4, dtype=np.int32)
+    previous_counts = np.array([2, 4, 6, 1], dtype=np.int32)
+    current_counts = np.array([6, 2, 1, 4], dtype=np.int32)
+    buffer = SimpleNamespace(np=snapshot, copy_to_gpu=Mock())
+    event = Mock()
+    event.synchronize.side_effect = lambda: np.copyto(snapshot, previous_counts)
+    runner = SimpleNamespace(
+        num_accepted_tokens_event=event,
+        num_accepted_tokens=buffer,
+        use_async_scheduling=True,
+        prev_positions=SimpleNamespace(np=np.array(previous_positions, dtype=np.int32)),
+        input_batch=SimpleNamespace(num_accepted_tokens_cpu=current_counts),
+    )
+    GPUModelRunner._sync_num_accepted_tokens(runner, len(previous_positions), True)
+    expected = [previous_counts[i] if i >= 0 else 1 for i in previous_positions]
+    np.testing.assert_array_equal(snapshot[: len(expected)], expected)
+    np.testing.assert_array_equal(current_counts[: len(expected)], expected)
+    np.testing.assert_array_equal(snapshot[len(expected) :], 1)
+    event.synchronize.assert_called_once()
+    buffer.copy_to_gpu.assert_called_once()
+
+
+def test_async_align_d2h_uses_snapshot_instead_of_movable_input_batch(monkeypatch):
+    gpu_counts = torch.ones(3, dtype=torch.int32)
+    snapshot = torch.ones(3, dtype=torch.int32)
+    input_batch_counts = torch.ones(3, dtype=torch.int32)
+    postprocess = Mock()
+    monkeypatch.setattr(
+        gpu_model_runner_module.mamba_utils, "postprocess_mamba_align_gpu", postprocess
+    )
+    runner = SimpleNamespace(
+        speculative_config=object(),
+        model_config=SimpleNamespace(is_hybrid=True),
+        cache_config=SimpleNamespace(mamba_cache_mode="align"),
+        num_accepted_tokens=SimpleNamespace(gpu=gpu_counts, cpu=snapshot),
+        input_batch=SimpleNamespace(num_accepted_tokens_cpu_tensor=input_batch_counts),
+        use_async_scheduling=True,
+        _get_mamba_bufs=lambda: None,
+        kv_cache_config=None,
+        compilation_config=SimpleNamespace(static_forward_context={}),
+        model=SimpleNamespace(get_mamba_state_copy_func=lambda: ()),
+        num_accepted_tokens_event=Mock(),
+    )
+    output_ids = torch.tensor([[1, 2, -1], [3, -1, -1], [4, 5, 6]])
+    GPUModelRunner._update_states_after_model_execute(runner, output_ids, None)
+    assert postprocess.call_args.kwargs["num_accepted_tokens_cpu_tensor"] is snapshot
+    torch.testing.assert_close(gpu_counts, torch.tensor([2, 1, 3], dtype=torch.int32))
