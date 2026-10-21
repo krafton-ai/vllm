@@ -412,6 +412,49 @@ class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
             return "nvfp4"
         return "mxfp8"
 
+    # Compute capabilities the preview was tested on (B300).
+    TESTED_CAPABILITIES = {(10, 3)}
+
+    @classmethod
+    def check_gpu(cls) -> None:
+        """Warn on an untested GPU; refuse one outside the sm_100 family.
+
+        The defaults force FLASHINFER_MLA / TRTLLM_RAGGED attention and the
+        tcgen05 grouped MoE kernels, which only exist on sm_100-family GPUs, so
+        other GPUs (e.g. GB10 sm_121, RTX 5090 sm_120) fail later with an
+        unrelated-looking error. RAON_ALLOW_UNTESTED_GPU=1 turns the refusal
+        into a warning for anyone overriding those defaults.
+        """
+        import os
+
+        from vllm.platforms import current_platform
+
+        if not current_platform.is_cuda():
+            return
+        capability = current_platform.get_device_capability()
+        if capability is None:
+            return
+        cap = (capability.major, capability.minor)
+        if cap in cls.TESTED_CAPABILITIES:
+            return
+        name = current_platform.get_device_name()
+        sm = f"sm_{cap[0]}{cap[1]}"
+        tested = ", ".join(f"sm_{a}{b}" for a, b in sorted(cls.TESTED_CAPABILITIES))
+        if cap[0] != 10 and os.environ.get("RAON_ALLOW_UNTESTED_GPU") != "1":
+            raise RuntimeError(
+                f"raon-1-mini preview has only been tested on NVIDIA B300 "
+                f"({tested}); detected {name} ({sm}). Its default serving "
+                "configuration uses kernels that need an sm_100-family GPU "
+                "(B200/B300), so it will not start here as is. "
+                "Set RAON_ALLOW_UNTESTED_GPU=1 to try anyway (untested), or "
+                "use the GGUF checkpoint with llama.cpp."
+            )
+        logger.warning(
+            "raon-1-mini preview has only been tested on NVIDIA B300 (%s); "
+            "detected %s (%s). It may work, but this GPU is untested.",
+            tested, name, sm,
+        )
+
     @classmethod
     def verify_and_update_model_config(cls, model_config: "ModelConfig") -> None:
         import os
@@ -446,6 +489,7 @@ class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
         )
         from vllm.v1.attention.backends.registry import AttentionBackendEnum
 
+        cls.check_gpu()
         scheduler_config = vllm_config.scheduler_config
         for key, value in cls.PROCESS_ENV.items():
             os.environ.setdefault(key, value)
