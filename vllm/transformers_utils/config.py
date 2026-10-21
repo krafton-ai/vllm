@@ -128,6 +128,7 @@ _CONFIG_REGISTRY: dict[str, type[PretrainedConfig]] = LazyConfigDict(
     step3_text="Step3TextConfig",
     step3p5="Step3p5Config",
     qianfan_ocr="QianfanOCRConfig",
+    raon1_mini="Raon1MiniConfig",
     qwen3_asr="Qwen3ASRConfig",
     qwen3_next="Qwen3NextConfig",
     qwen3_5="Qwen3_5Config",

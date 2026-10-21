@@ -128,7 +128,12 @@ def kernel_warmup(worker: "Worker", *, process_local_only: bool = False):
 
     # Run next so input-prep kernels JIT against pristine runner state.
     if worker.vllm_config.kernel_config.enable_jit_warmup:
-        kimi_k3_triton_warmup(worker)
+        if worker.model_config.hf_config.model_type == "raon1_mini":
+            from vllm.models.raon1_mini.rda_base import rda_kernel_warmup
+
+            rda_kernel_warmup(worker)
+        else:
+            kimi_k3_triton_warmup(worker)
         fa4_cutedsl_warmup(worker)
         sparse_mla_triton_warmup(worker)
 
