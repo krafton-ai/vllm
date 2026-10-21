@@ -1614,6 +1614,28 @@ class GPUModelRunner(
         else:
             return None
 
+    def _sync_num_accepted_tokens(self, num_reqs: int, has_prev_requests: bool) -> None:
+        assert self.num_accepted_tokens_event is not None
+        self.num_accepted_tokens_event.synchronize()
+        if self.use_async_scheduling:
+            # D2H must target a stable snapshot: input_batch rows may already
+            # have moved while the previous step was still on the GPU.
+            if has_prev_requests:
+                prev_idx = self.prev_positions.np[:num_reqs]
+                new_mask = prev_idx < 0
+                counts = self.num_accepted_tokens.np[np.where(new_mask, 0, prev_idx)]
+                counts[new_mask] = 1
+            else:
+                counts = np.ones(num_reqs, dtype=np.int32)
+            self.num_accepted_tokens.np[:num_reqs] = counts
+            self.input_batch.num_accepted_tokens_cpu[:num_reqs] = counts
+        else:
+            self.num_accepted_tokens.np[:num_reqs] = (
+                self.input_batch.num_accepted_tokens_cpu[:num_reqs]
+            )
+        self.num_accepted_tokens.np[num_reqs:].fill(1)
+        self.num_accepted_tokens.copy_to_gpu()
+
     def _update_states_after_model_execute(
         self, output_token_ids: torch.Tensor, scheduler_output: "SchedulerOutput"
     ) -> None:
@@ -1644,7 +1666,9 @@ class GPUModelRunner(
                 num_reqs=num_reqs,
                 num_accepted_tokens_gpu=self.num_accepted_tokens.gpu,
                 num_accepted_tokens_cpu_tensor=(
-                    self.input_batch.num_accepted_tokens_cpu_tensor
+                    self.num_accepted_tokens.cpu
+                    if self.use_async_scheduling
+                    else self.input_batch.num_accepted_tokens_cpu_tensor
                 ),
                 input_batch=self.input_batch,
                 kv_cache_config=self.kv_cache_config,
@@ -2167,28 +2191,7 @@ class GPUModelRunner(
             self.use_async_scheduling and self.cache_config.mamba_cache_mode != "align"
         )
         if needs_cpu_accepted_counts:
-            assert self.num_accepted_tokens_event is not None
-            self.num_accepted_tokens_event.synchronize()
-            # Async mode: condense() reordered indices, use prev_positions mapping
-            if self.use_async_scheduling and prev_req_id_to_index:
-                prev_idx = self.prev_positions.np[:num_reqs]
-                new_mask = prev_idx < 0
-                self.num_accepted_tokens.np[:num_reqs] = (
-                    self.input_batch.num_accepted_tokens_cpu[
-                        np.where(new_mask, 0, prev_idx)
-                    ]
-                )
-                self.num_accepted_tokens.np[:num_reqs][new_mask] = 1
-                self.input_batch.num_accepted_tokens_cpu[:num_reqs] = (
-                    self.num_accepted_tokens.np[:num_reqs]
-                )
-            else:
-                # Non-async mode: use values directly
-                self.num_accepted_tokens.np[:num_reqs] = (
-                    self.input_batch.num_accepted_tokens_cpu[:num_reqs]
-                )
-            self.num_accepted_tokens.np[num_reqs:].fill(1)
-            self.num_accepted_tokens.copy_to_gpu()
+            self._sync_num_accepted_tokens(num_reqs, bool(prev_req_id_to_index))
         else:
             # Default to 1; update_num_computed_tokens_for_batch_change below
             # corrects rows that had drafts from valid_sampled_token_count.
@@ -7585,6 +7588,7 @@ class GPUModelRunner(
                         kv_cache_stride_order,
                         kernel_num_blocks,
                         packing,
+                        num_blocks_per_kv_block=num_blocks_per_kv_block,
                     )
 
                 elif isinstance(kv_cache_spec, MambaSpec):

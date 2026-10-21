@@ -323,3 +323,93 @@ def test_decode_attention_cross_layer_view(H_Q, H_KV, D_QK, D_V, is_mla, PAGE_SI
     # Same data and same compute order; only addressing differs.
     assert torch.equal(o_ref, o_xl)
     assert torch.equal(lse_ref, lse_xl)
+
+
+@pytest.mark.skipif(not current_platform.is_cuda(), reason="CUDA MLA backend")
+@pytest.mark.parametrize("causal", [True, False])
+@pytest.mark.parametrize("query_lens", [[8], [1, 3, 8], [4, 1, 0]])
+@pytest.mark.parametrize("padding", [0, 4])
+def test_multi_query_mla_uses_exact_device_prefixes(causal, query_lens, padding):
+    """Verification must exclude future KV even with ragged and padded rows."""
+    from types import SimpleNamespace
+
+    from vllm.v1.attention.backends.mla.triton_mla import TritonMLAImpl
+
+    torch.manual_seed(41)
+    requests = len(query_lens)
+    page, dim, value, heads = 128, 576, 512, 40
+    cache = (torch.randn(requests * 3, page, dim, device="cuda") * 0.2).to(
+        torch.bfloat16
+    )
+    table = torch.arange(requests * 3, device="cuda", dtype=torch.int32).reshape(
+        requests, 3
+    )
+    contexts = torch.tensor([137 + i * 7 for i in range(requests)], device="cuda")
+    lengths = torch.tensor(query_lens, device="cuda", dtype=torch.int32)
+    starts = torch.cat([lengths.new_zeros(1), lengths.cumsum(0)])
+    seq_lens = contexts + lengths if causal else contexts
+    tokens = sum(query_lens)
+    q = (
+        torch.randn(tokens + padding, heads, dim, device="cuda", dtype=torch.bfloat16)
+        * 0.2
+    )
+    metadata = SimpleNamespace(
+        decode=SimpleNamespace(block_table=table, seq_lens=seq_lens),
+        max_seq_len=200,
+        max_query_len=max(query_lens),
+        causal=causal,
+        query_start_loc=starts,
+        num_decodes=requests,
+        num_decode_tokens=tokens + padding,
+    )
+    impl = SimpleNamespace(kv_lora_rank=value, _sm_count=100, scale=192**-0.5)
+    layer = SimpleNamespace(_k_scale=torch.ones((), device="cuda"))
+    actual, _ = TritonMLAImpl.forward_mqa(impl, q, cache, metadata, layer)
+    expected = []
+    token = 0
+    for request, query_len in enumerate(query_lens):
+        kv = cache[table[request].long()].reshape(-1, dim).float()
+        for position in range(query_len):
+            end = (
+                int(contexts[request]) + position + 1
+                if causal
+                else int(contexts[request])
+            )
+            scores = (q[token].float() @ kv[:end].T) * impl.scale
+            expected.append(torch.softmax(scores, -1) @ kv[:end, :value])
+            token += 1
+    torch.testing.assert_close(
+        actual[:tokens].float(), torch.stack(expected), atol=0.005, rtol=0.03
+    )
+
+
+@pytest.mark.skipif(not current_platform.is_cuda(), reason="CUDA graph replay")
+@pytest.mark.parametrize("padding", [0, 4])
+def test_mla_decode_prefixes_follow_device_lengths_on_graph_replay(padding):
+    """A replay must use newly accepted lengths rather than a CPU snapshot."""
+    from vllm.v1.attention.backends.mla.triton_mla import _expand_mla_decode_rows
+
+    table = torch.tensor([[1, 2], [3, 4]], device="cuda", dtype=torch.int32)
+    lengths = torch.tensor([9, 15], device="cuda", dtype=torch.int32)
+    starts = torch.tensor([0, 2, 5], device="cuda", dtype=torch.int32)
+    for _ in range(2):
+        _expand_mla_decode_rows(table, lengths, starts, 5 + padding, True)
+    torch.accelerator.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        rows, actual = _expand_mla_decode_rows(
+            table, lengths, starts, 5 + padding, True
+        )
+    lengths.copy_(torch.tensor([7, 11], device="cuda", dtype=torch.int32))
+    if padding:
+        starts.copy_(torch.tensor([0, 2, 4], device="cuda", dtype=torch.int32))
+        expected_lengths = [6, 7, 10, 11] + [1] * (padding + 1)
+        expected_requests = [0, 0, 1, 1] + [0] * (padding + 1)
+    else:
+        expected_lengths = [6, 7, 9, 10, 11]
+        expected_requests = [0, 0, 1, 1, 1]
+    graph.replay()
+    torch.testing.assert_close(
+        actual.cpu(), torch.tensor(expected_lengths, dtype=actual.dtype)
+    )
+    torch.testing.assert_close(rows.cpu(), table.cpu()[torch.tensor(expected_requests)])

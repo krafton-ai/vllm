@@ -276,6 +276,7 @@ def _reshape_attention_kv_cache(
     num_blocks: int,
     packing: tuple[int, int] | None,
     page_aligned_blocks: bool = False,
+    num_blocks_per_kv_block: int = 1,
 ) -> torch.Tensor:
     permuted_kv_cache_shape = tuple(kv_cache_shape[i] for i in kv_cache_stride_order)
     inv_order = [
@@ -307,7 +308,16 @@ def _reshape_attention_kv_cache(
             "kv-first layouts are not supported."
         )
         dtype_size = get_dtype_size(kv_cache_spec.dtype)
-        page_stride = kv_cache_spec.page_size_bytes // dtype_size
+        # A logical padded page may contain several native kernel blocks.
+        # Distribute its padding across those blocks so the flat kernel block
+        # table advances within a logical page, rather than skipping a whole
+        # logical page for every native block.
+        stride_divisor = dtype_size * num_blocks_per_kv_block
+        if kv_cache_spec.page_size_bytes % stride_divisor:
+            raise ValueError("Padded KV page cannot be evenly split into kernel blocks")
+        page_stride = kv_cache_spec.page_size_bytes // stride_divisor
+        if page_stride < prod(kv_cache_shape[1:]):
+            raise ValueError("Padded kernel block stride is smaller than its payload")
 
         num_blocks_dim = inv_order[0]
         strides = list(torch.empty(permuted_kv_cache_shape, device="meta").stride())
@@ -431,6 +441,7 @@ def _reshape_kv_cache(
                     kernel_num_blocks,
                     packing,
                     page_aligned_blocks=layer_name in page_aligned_layers,
+                    num_blocks_per_kv_block=num_blocks_per_kv_block,
                 )
 
             elif isinstance(kv_cache_spec, MambaSpec):

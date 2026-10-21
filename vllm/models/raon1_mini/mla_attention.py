@@ -71,14 +71,6 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
 from vllm.model_executor.layers.rotary_embedding import RotaryEmbedding, get_rope
 from vllm.model_executor.utils import replace_parameter
 from vllm.models.common.ops import fused_q_kv_rmsnorm
-from .mla_kv_cache import (
-    fused_mla_decode_q_concat_kv_cache_insert,
-    fused_mla_key_concat_ds_mla_insert,
-    fused_mla_key_concat_kv_cache_insert,
-    fused_mla_kv_concat,
-    fused_mla_kv_concat_quant_fp8,
-    fused_mla_qkv_quant_kv_cache_fp8_insert,
-)
 from vllm.platforms import current_platform
 from vllm.utils.multi_stream_utils import maybe_execute_in_parallel
 from vllm.utils.torch_utils import (
@@ -95,6 +87,15 @@ from vllm.v1.attention.ops.dcp_utils import MLADCPManager
 from vllm.v1.attention.ops.merge_attn_states import merge_attn_states
 from vllm.v1.attention.selector import get_attn_backend
 from vllm.v1.kv_cache_interface import KVCacheSpec, MLAAttentionSpec, get_kv_quant_mode
+
+from .mla_kv_cache import (
+    fused_mla_decode_q_concat_kv_cache_insert,
+    fused_mla_key_concat_ds_mla_insert,
+    fused_mla_key_concat_kv_cache_insert,
+    fused_mla_kv_concat,
+    fused_mla_kv_concat_quant_fp8,
+    fused_mla_qkv_quant_kv_cache_fp8_insert,
+)
 
 if TYPE_CHECKING:
     from vllm.model_executor.layers.attention.mla_attention import MLACommonMetadata
@@ -325,8 +326,7 @@ class MultiHeadLatentAttention(nn.Module, AttentionLayerBase):
         vllm_config = get_current_vllm_config()
         parallel_config = vllm_config.parallel_config
         assert parallel_config.prefill_context_parallel_size == 1, (
-            "MultiHeadLatentAttention does not support prefill context "
-            "parallelism."
+            "MultiHeadLatentAttention does not support prefill context parallelism."
         )
         self.dcp_world_size = parallel_config.decode_context_parallel_size
         assert self.dcp_world_size <= 1 or self.rotary_emb is None, (
@@ -540,7 +540,6 @@ class MultiHeadLatentAttention(nn.Module, AttentionLayerBase):
 
         if gate is not None:
             attn_out = _gate_sigmoid_mul(attn_out, gate)
-
 
         return self.o_proj(attn_out)[0]
 
@@ -928,6 +927,25 @@ class MultiHeadLatentAttention(nn.Module, AttentionLayerBase):
                 slot_mapping,
                 positions,
                 cos_sin_cache,
+            )
+        elif (
+            self.kv_cache_dtype == "fp8_e4m3"
+            and not fp8_prefill
+            and current_platform.is_device_capability_family(120)
+        ):
+            # SM120 MLA prefill uses BF16 Q/K/V while retaining an FP8
+            # latent cache. Raon-1 mini uses NoPE in its MLA layers.
+            assert positions is None and cos_sin_cache is None, (
+                "SM120 FP8-cache/BF16-prefill fallback currently requires NoPE"
+            )
+            k = fused_mla_kv_concat(k_nope, k_pe)
+            ops.concat_and_cache_mla(
+                kv_c_normed,
+                k_pe.reshape(k_pe.shape[0], -1),
+                self.kv_cache,
+                slot_mapping,
+                self.kv_cache_dtype,
+                self._k_scale,
             )
         elif is_quantized_kv_cache(self.kv_cache_dtype):
             assert fp8_prefill, (
