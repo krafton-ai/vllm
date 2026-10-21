@@ -417,16 +417,13 @@ class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
 
     @classmethod
     def check_gpu(cls) -> None:
-        """Warn on an untested GPU; refuse one outside the sm_100 family.
+        """Warn when the GPU is not one the preview was tested on.
 
-        The defaults force FLASHINFER_MLA / TRTLLM_RAGGED attention and the
-        tcgen05 grouped MoE kernels, which only exist on sm_100-family GPUs, so
-        other GPUs (e.g. GB10 sm_121, RTX 5090 sm_120) fail later with an
-        unrelated-looking error. RAON_ALLOW_UNTESTED_GPU=1 turns the refusal
-        into a warning for anyone overriding those defaults.
+        Nothing is blocked. The defaults force FLASHINFER_MLA / TRTLLM_RAGGED
+        attention and tcgen05 grouped MoE kernels, which exist only on
+        sm_100-family GPUs, so the warning names them for anyone who hits a
+        later error on another GPU (e.g. GB10 sm_121, RTX 5090 sm_120).
         """
-        import os
-
         from vllm.platforms import current_platform
 
         if not current_platform.is_cuda():
@@ -437,22 +434,15 @@ class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
         cap = (capability.major, capability.minor)
         if cap in cls.TESTED_CAPABILITIES:
             return
-        name = current_platform.get_device_name()
-        sm = f"sm_{cap[0]}{cap[1]}"
         tested = ", ".join(f"sm_{a}{b}" for a, b in sorted(cls.TESTED_CAPABILITIES))
-        if cap[0] != 10 and os.environ.get("RAON_ALLOW_UNTESTED_GPU") != "1":
-            raise RuntimeError(
-                f"raon-1-mini preview has only been tested on NVIDIA B300 "
-                f"({tested}); detected {name} ({sm}). Its default serving "
-                "configuration uses kernels that need an sm_100-family GPU "
-                "(B200/B300), so it will not start here as is. "
-                "Set RAON_ALLOW_UNTESTED_GPU=1 to try anyway (untested), or "
-                "use the GGUF checkpoint with llama.cpp."
-            )
         logger.warning(
             "raon-1-mini preview has only been tested on NVIDIA B300 (%s); "
-            "detected %s (%s). It may work, but this GPU is untested.",
-            tested, name, sm,
+            "detected %s (sm_%d%d). It may work, but this GPU is untested. "
+            "The default serving configuration uses FLASHINFER_MLA / "
+            "TRTLLM_RAGGED attention and grouped MoE kernels built for "
+            "sm_100-family GPUs; if startup fails, those are the first "
+            "settings to override.",
+            tested, current_platform.get_device_name(), cap[0], cap[1],
         )
 
     @classmethod
