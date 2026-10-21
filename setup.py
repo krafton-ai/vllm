@@ -916,7 +916,15 @@ class precompiled_wheel_utils:
             variant = os.getenv("VLLM_PRECOMPILED_WHEEL_VARIANT", None)
             if variant is None:
                 variant = precompiled_wheel_utils.detect_system_cuda_variant()
-            commit = os.getenv("VLLM_PRECOMPILED_WHEEL_COMMIT", "").lower()
+            # The raon-1-mini-preview branch sits on this upstream commit. Its
+            # kernels must come from the matching wheel: resolving the base at
+            # install time fails for `pip install git+...` (detached HEAD) or
+            # when the GitHub API is rate limited, and the nightly fallback
+            # ships newer kernels whose op signatures no longer match.
+            commit = os.getenv(
+                "VLLM_PRECOMPILED_WHEEL_COMMIT",
+                "53e211d2923192ea1f7442de93d59cfbb150e089",
+            ).lower()
             if not commit or len(commit) != 40:
                 print(
                     f"VLLM_PRECOMPILED_WHEEL_COMMIT not valid: {commit}"
