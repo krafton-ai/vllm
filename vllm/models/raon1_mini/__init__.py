@@ -77,7 +77,9 @@ def _build_dirs() -> dict[str, str]:
     """
     from vllm import envs
 
-    root = os.path.join(envs.VLLM_CACHE_ROOT, "raon1_mini", "build", socket.gethostname())
+    root = os.path.join(
+        envs.VLLM_CACHE_ROOT, "raon1_mini", "build", socket.gethostname()
+    )
     return {
         "RAON_KDA_SGL_FUSED_BUILD_DIR": os.path.join(root, "sgl-kda-fused"),
         "RAON_KDA_SGL_FUSED_SPEC_BUILD_DIR": os.path.join(root, "sgl-kda-fused-spec"),
@@ -104,11 +106,32 @@ def apply_precision_profile(profile: str) -> None:
         if other == profile:
             continue
         for key, value in env.items():
-            if _DEFAULTED.get(key) == value and os.environ.get(key) == value:
+            if key in _DEFAULTED and os.environ.get(key) == _DEFAULTED[key]:
                 del os.environ[key]
                 del _DEFAULTED[key]
     for key, value in PROFILE_ENV[profile].items():
         _set_default(key, value)
+
+
+def apply_mxfp8_device_defaults() -> None:
+    """Use the sliced FP8 GEMM on SM12x, preserving explicit selections."""
+    from vllm.platforms import current_platform
+
+    if os.environ.get(PROFILE_KEY) != "mxfp8":
+        return
+
+    def replace_default(key: str, value: str) -> None:
+        if key in _DEFAULTED and os.environ.get(key) == _DEFAULTED[key]:
+            os.environ[key] = _DEFAULTED[key] = value
+
+    mode = "RAON_MOE_MXFP8_W8A8_GEMM_MODE"
+    if current_platform.is_device_capability_family(120):
+        replace_default(mode, "3")
+    if os.environ.get(mode) == "3":
+        # The portable chain returns expert rows for the model's combine.
+        replace_default("RAON_MOE_MXFP8_W8A8_FINALIZE", "0")
+        # Avoid warming up SM100-only CUTLASS kernels on this path.
+        replace_default("RAON_SWAB_SMALL_GEMM_SHAPE_MAP", "")
 
 
 for _key, _value in {**PRODUCTION_ENV, **_build_dirs()}.items():
