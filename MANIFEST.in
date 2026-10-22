@@ -8,3 +8,6 @@ include tools/build_rust.py
 
 recursive-include cmake *
 recursive-include csrc *
+
+# Raon builds these CUDA kernels at runtime, including from source archives.
+recursive-include vllm/models/raon1_mini *.cu *.cuh *.cpp *.h *.hpp LICENSE PROVENANCE.md

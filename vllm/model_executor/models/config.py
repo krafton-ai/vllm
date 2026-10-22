@@ -373,7 +373,7 @@ class KimiK3ForConditionalGenerationConfig(VerifyAndUpdateConfig):
 
 
 class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
-    """Serve raon-1-mini with attention defaults for SM10x and SM120.
+    """Serve raon-1-mini with attention defaults for SM10x and SM12x.
 
     The release was qualified with one serving configuration; the settings the
     command line leaves unset take its values, so a plain ``vllm serve`` with
@@ -435,9 +435,10 @@ class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
             "raon-1-mini preview detected %s (sm_%d%d), profile %s. "
             "This GPU/profile combination is untested. Tested configurations "
             "are B300 (sm_103) and RTX 5090 (sm_120, NVFP4). "
-            "SM120 selects TRITON_MLA / FLASH_ATTN attention; other GPUs "
+            "SM12x selects TRITON_MLA / FLASH_ATTN attention; other GPUs "
             "default to FLASHINFER_MLA / TRTLLM_RAGGED. The MXFP8 grouped "
-            "MoE path requires sm_100-family kernels.",
+            "MoE path requires sm_100-family kernels; SM12x defaults to "
+            "the portable sliced FP8 MoE path.",
             current_platform.get_device_name(),
             cap[0],
             cap[1],
@@ -457,6 +458,7 @@ class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
         import vllm.models.raon1_mini as raon
 
         raon.apply_precision_profile(profile)
+        raon.apply_mxfp8_device_defaults()
         if profile == "nvfp4":
             # vLLM's ModelOpt methods (Marlin) own every quantized layer.
             return
@@ -490,7 +492,7 @@ class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
 
         from vllm.platforms import current_platform
 
-        sm120 = current_platform.is_device_capability(120)
+        sm120 = current_platform.is_device_capability_family(120)
         attention_config = vllm_config.attention_config
         attention_config.backend_per_kind.setdefault(
             "mla_attention",

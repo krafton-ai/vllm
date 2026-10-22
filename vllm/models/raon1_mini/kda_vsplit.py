@@ -71,11 +71,11 @@ def _load_module():
     major, minor = torch.cuda.get_device_capability()
     if major == 10:
         arch = "100f"
-    elif (major, minor) == (12, 0):
-        arch = "120a"
+    elif (major, minor) in ((12, 0), (12, 1)):
+        arch = f"12{minor}a"
     else:
         raise ValueError(
-            f"{_ENV}=adaptive supports SM10x and SM120, got SM{major}{minor}"
+            f"{_ENV}=adaptive supports SM10x, SM120 and SM121, got SM{major}{minor}"
         )
     build_dir = os.path.join(build_dir, arch)
     os.makedirs(build_dir, exist_ok=True)

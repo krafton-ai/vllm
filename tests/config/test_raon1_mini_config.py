@@ -13,7 +13,7 @@ from vllm.v1.attention.backends.mla.prefill.registry import MLAPrefillBackendEnu
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
 
 
-@pytest.mark.parametrize("capability", [100, 103, 120])
+@pytest.mark.parametrize("capability", [100, 103, 120, 121])
 @pytest.mark.parametrize("explicit", [False, True])
 def test_raon_attention_defaults_match_device_and_preserve_overrides(
     monkeypatch, capability, explicit
@@ -24,6 +24,11 @@ def test_raon_attention_defaults_match_device_and_preserve_overrides(
     raon.apply_precision_profile("nvfp4")
     monkeypatch.setattr(
         current_platform, "is_device_capability", lambda cap: cap == capability
+    )
+    monkeypatch.setattr(
+        current_platform,
+        "is_device_capability_family",
+        lambda cap: cap // 10 == capability // 10,
     )
     attention = AttentionConfig()
     if explicit:
@@ -40,7 +45,7 @@ def test_raon_attention_defaults_match_device_and_preserve_overrides(
         speculative_config=None,
     )
     Raon1MiniForCausalLMConfig.verify_and_update_config(cast(VllmConfig, config))
-    portable = explicit or capability == 120
+    portable = explicit or capability in (120, 121)
     assert attention.backend_per_kind["mla_attention"] == (
         AttentionBackendEnum.TRITON_MLA
         if portable
@@ -51,7 +56,7 @@ def test_raon_attention_defaults_match_device_and_preserve_overrides(
         if portable
         else MLAPrefillBackendEnum.TRTLLM_RAGGED
     )
-    if capability == 120:
+    if capability in (120, 121):
         assert not attention.use_prefill_query_quantization
 
 
@@ -84,3 +89,40 @@ def test_raon_gpu_warning_distinguishes_checkpoint_profile(
     monkeypatch.setattr(config_module.logger, "warning", warning)
     Raon1MiniForCausalLMConfig.check_gpu()
     assert warning.call_count == int(warns)
+
+
+@pytest.mark.parametrize("capability", [103, 120, 121])
+@pytest.mark.parametrize("explicit_mode", [None, "3", "4"])
+def test_raon_mxfp8_device_defaults_preserve_overrides_and_profile_switch(
+    monkeypatch, capability, explicit_mode
+):
+    import os
+
+    import vllm.models.raon1_mini as raon
+    from vllm.models.raon1_mini.mxfp8_loader import validate_compact_loading
+
+    monkeypatch.setattr(
+        os,
+        "environ",
+        {k: v for k, v in os.environ.items() if not k.startswith("RAON_")},
+    )
+    monkeypatch.setattr(raon, "_DEFAULTED", {})
+    monkeypatch.setattr(
+        current_platform,
+        "is_device_capability_family",
+        lambda cap: cap // 10 == capability // 10,
+    )
+    mode_key = "RAON_MOE_MXFP8_W8A8_GEMM_MODE"
+    if explicit_mode is not None:
+        os.environ[mode_key] = explicit_mode
+    raon.apply_precision_profile("mxfp8")
+    raon.apply_mxfp8_device_defaults()
+    expected = explicit_mode or ("3" if capability in (120, 121) else "4")
+    assert os.environ[mode_key] == expected
+    assert os.environ["RAON_MOE_MXFP8_W8A8_FINALIZE"] == (
+        "0" if expected == "3" else "1"
+    )
+    validate_compact_loading()
+    raon.apply_precision_profile("nvfp4")
+    assert os.environ.get(mode_key) == explicit_mode
+    assert "RAON_MOE_MXFP8_W8A8_FINALIZE" not in os.environ

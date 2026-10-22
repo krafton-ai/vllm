@@ -34,6 +34,38 @@ MAX_TOKENS = 4
 NUM_LOG_PROBS = 8
 
 
+def test_raon_compact_mxfp8_portable_cache_preserves_checkpoint_bytes(monkeypatch):
+    from vllm.models.raon1_mini import mxfp8_w8a8_triton
+    from vllm.models.raon1_mini.mxfp8_loader import _register_compact_weights
+    from vllm.models.raon1_mini.mxfp8_sharding import pack_scales
+
+    monkeypatch.setenv("RAON_MOE_MXFP8_W8A8_GEMM_MODE", "3")
+    monkeypatch.setattr(mxfp8_w8a8_triton, "_WQ_CACHE", {})
+    layer = torch.nn.Module()
+    shapes = ((2, 192, 160), (2, 160, 96))
+    layer.w13_weight = torch.nn.Parameter(torch.empty(shapes[0], device="meta"))
+    layer.w2_weight = torch.nn.Parameter(torch.empty(shapes[1], device="meta"))
+    q13, q2 = [torch.randn(shape).to(torch.float8_e4m3fn) for shape in shapes]
+    s13 = torch.randint(120, 130, (2, 192, 5), dtype=torch.uint8)
+    s2 = torch.randint(120, 130, (2, 160, 3), dtype=torch.uint8)
+    tensors = {
+        "q13": q13,
+        "q2": q2,
+        "s13_mma": pack_scales(s13, fill=0),
+        "s2_mma": pack_scales(s2, fill=0),
+    }
+    _register_compact_weights(layer, tensors)
+    cached = mxfp8_w8a8_triton._quantized_weights(layer.w13_weight, layer.w2_weight)
+    assert cached[0] is q13 and cached[2] is q2
+    assert torch.equal(cached[1], s13) and torch.equal(cached[3], s2)
+    assert cached[1].is_contiguous() and cached[3].is_contiguous()
+    assert layer.w13_weight.is_meta and layer.w2_weight.is_meta
+    assert layer.raon_mxfp8_q13 is q13
+    assert layer.raon_mxfp8_s2 is cached[3]
+    with pytest.raises(RuntimeError, match="cannot be refitted"):
+        _register_compact_weights(layer, tensors)
+
+
 @pytest.mark.skipif(
     not is_quant_method_supported("mxfp8"),
     reason="mxfp8 is not supported on this GPU type (requires sm_100+).",
