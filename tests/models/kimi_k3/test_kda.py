@@ -770,14 +770,15 @@ def test_flashkda_correctness():
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability() != (12, 0),
-    reason="Raon V-split SM120 port",
+    not torch.cuda.is_available()
+    or torch.cuda.get_device_capability() not in ((12, 0), (12, 1)),
+    reason="Raon V-split requires SM120 or SM121",
 )
 @pytest.mark.parametrize("lengths", [[128], [3, 16, 33, 129], [1, 17]])
 @pytest.mark.parametrize("has_state", [False, True])
 @pytest.mark.parametrize("mode", [0, 1])
 @torch.inference_mode()
-def test_raon_vsplit_sm120_matches_stock_output_and_recurrent_state(
+def test_raon_vsplit_sm12x_matches_stock_output_and_recurrent_state(
     lengths, has_state, mode
 ):
     import vllm._flashkda_C  # noqa: F401
