@@ -20,6 +20,8 @@ from vllm.model_executor.layers.mamba.mamba_utils import (
     MambaStateDtypeCalculator,
     MambaStateShapeCalculator,
 )
+from vllm.model_executor.layers.quantization.modelopt import ModelOptLinearMethod
+from vllm.model_executor.layers.quantization.utils.quant_utils import kNvfp4Static
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     ParallelLMHead,
     VocabParallelEmbedding,
@@ -398,6 +400,23 @@ class RaonModel(nn.Module, EagleModelMixin):
                     )
                     loaded.add(name)
         for module in self.modules():
+            if isinstance(module, RaonRDAAttention) and module.in_proj_padding:
+                projection = module.in_proj_qkvgfab
+                method = projection.quant_method
+                if (
+                    isinstance(method, ModelOptLinearMethod)
+                    and method.spec.weight == kNvfp4Static
+                ):
+                    # Zero-weight padding has no checkpoint scales. Use finite
+                    # block scales and preserve the loaded global scale.
+                    projection.weight_scale.data[-module.in_proj_padding :].fill_(1.0)
+                    projection.weight_scale_2.data[-1] = projection.weight_scale_2.data[
+                        :-1
+                    ].max()
+                    if hasattr(projection, "input_scale"):
+                        projection.input_scale.data[-1] = projection.input_scale.data[
+                            :-1
+                        ].max()
             if isinstance(module, RaonRDAAttention) and module.fast:
                 from vllm.model_executor.layers.raon.rda import prepare_rda
 

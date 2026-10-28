@@ -2,6 +2,19 @@ group: Models - Basic
 depends_on:
   - image-build
 steps:
+- label: ":nvidia: (B200) Raon-1-mini"
+  key: raon1-mini-loading-b200
+  device: b200
+  timeout_in_minutes: 35
+  source_file_dependencies:
+  - vllm/model_executor/models/raon1_mini.py
+  - vllm/model_executor/layers/raon/
+  - vllm/transformers_utils/configs/raon1_mini.py
+  - vllm/models/kimi_k3/nvidia/
+  - tests/models/raon1_mini/
+  commands:
+  - pytest -v -s models/raon1_mini/test_loading.py
+
 - label: ":nvidia: (H200 MIG 18GB) Basic Models (Initialization)"
   key: basic-models-tests-initialization
   timeout_in_minutes: 25
