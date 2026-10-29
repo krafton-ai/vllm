@@ -19,6 +19,7 @@ from vllm.model_executor.layers.mamba.mamba_utils import (
     MambaStateCopyFuncCalculator,
     MambaStateDtypeCalculator,
     MambaStateShapeCalculator,
+    is_conv_state_dim_first,
 )
 from vllm.model_executor.layers.quantization.modelopt import ModelOptLinearMethod
 from vllm.model_executor.layers.quantization.utils.quant_utils import kNvfp4Static
@@ -46,6 +47,47 @@ from vllm.transformers_utils.configs.raon1_mini import Raon1MiniConfig
 from vllm.utils.torch_utils import aux_stream
 
 
+def _use_raon_kernels(vllm_config: VllmConfig) -> bool:
+    """Select the fused kernels only for their supported shape and state format."""
+    config = vllm_config.model_config.hf_text_config
+    cache = vllm_config.cache_config
+    capability = current_platform.get_device_capability()
+    state_dtypes = MambaStateDtypeCalculator.kda_state_dtype(
+        vllm_config.model_config.dtype,
+        cache.mamba_cache_dtype,
+        cache.mamba_ssm_cache_dtype,
+    )
+    rda = config.linear_attn_config
+    supported = (
+        current_platform.is_cuda()
+        and capability is not None
+        and capability.major in (10, 12)
+        and vllm_config.parallel_config.tensor_parallel_size == 1
+        and vllm_config.model_config.dtype == torch.bfloat16
+        and state_dtypes == (torch.bfloat16, torch.float32)
+        and not is_conv_state_dim_first()
+        and config.hidden_size == 2560
+        and config.raon_mhc_streams == 4
+        and config.raon_mhc_post_factor == 2
+        and rda["head_dim"] == 128
+        and rda["short_conv_kernel_size"] == 4
+        and rda.get("gate_lower_bound") is not None
+        and (
+            vllm_config.speculative_config is None
+            or vllm_config.speculative_config.num_speculative_tokens <= 7
+        )
+    )
+    assert isinstance(vllm_config.additional_config, dict)
+    requested = vllm_config.additional_config.get("raon_fast")
+    if requested is True and not supported:
+        raise ValueError(
+            "Raon fused kernels require SM10x/SM12x, TP1, the published model "
+            "shape, BF16 convolution history, FP32 RDA state in SD layout, "
+            "and at most seven speculative tokens"
+        )
+    return supported if requested is None else bool(requested)
+
+
 class RaonProductionRMSNorm(RMSNorm):
     """Match the production standalone norm's FP32 affine computation."""
 
@@ -64,11 +106,11 @@ def rda_value_scale(beta: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
 
 
 class RaonRDAAttention(KimiK3DeltaAttention):
-    def __init__(self, config, vllm_config, prefix=""):
+    def __init__(self, config, vllm_config, prefix="", *, fast=False):
         super().__init__(config, vllm_config, prefix)
         if self.use_recoverssm:
             raise NotImplementedError("Raon RDA does not yet support RecoverSSM")
-        self.fast = vllm_config.additional_config.get("raon_fast", False)
+        self.fast = fast
         if self.fast:
             if (
                 self.head_dim != 128
@@ -206,13 +248,13 @@ class RaonMHC(nn.Module):
 
 
 class RaonDecoderLayer(nn.Module):
-    def __init__(self, config, vllm_config, prefix, aux_stream):
+    def __init__(self, config, vllm_config, prefix, aux_stream, *, fast=False):
         super().__init__()
         index = int(prefix.rsplit(".", 1)[1])
         quant = vllm_config.quant_config
         if config.is_rda_layer(index):
             self.self_attn = RaonRDAAttention(
-                config, vllm_config, f"{prefix}.self_attn"
+                config, vllm_config, f"{prefix}.self_attn", fast=fast
             )
         else:
             self.self_attn = MultiHeadLatentAttention(
@@ -263,7 +305,6 @@ class RaonDecoderLayer(nn.Module):
         self.post_attention_layernorm = norm_cls(
             config.hidden_size, eps=config.rms_norm_eps
         )
-        fast = vllm_config.additional_config.get("raon_fast", False)
         self.self_attn_raon_mhc = RaonMHC(config, fast=fast)
         self.mlp_raon_mhc = RaonMHC(config, fast=fast)
 
@@ -284,17 +325,7 @@ class RaonModel(nn.Module, EagleModelMixin):
         super().__init__()
         config = self.config = vllm_config.model_config.hf_text_config
         parallel = vllm_config.parallel_config
-        fast = isinstance(
-            vllm_config.additional_config, dict
-        ) and vllm_config.additional_config.get("raon_fast", False)
-        if fast:
-            capability = current_platform.get_device_capability()
-            if capability is None or capability.major != 10:
-                raise NotImplementedError("Raon FAST currently requires CUDA SM10x")
-            if parallel.tensor_parallel_size != 1:
-                raise NotImplementedError(
-                    "Raon FAST currently requires tensor_parallel_size=1"
-                )
+        self.fast = _use_raon_kernels(vllm_config)
         if parallel.pipeline_parallel_size != 1:
             raise NotImplementedError("Raon mHC pipeline parallelism is not supported")
         if parallel.enable_expert_parallel:
@@ -305,7 +336,9 @@ class RaonModel(nn.Module, EagleModelMixin):
         stream = aux_stream()
         _, _, self.layers = make_layers(
             config.num_hidden_layers,
-            lambda prefix: RaonDecoderLayer(config, vllm_config, prefix, stream),
+            lambda prefix: RaonDecoderLayer(
+                config, vllm_config, prefix, stream, fast=self.fast
+            ),
             prefix=f"{prefix}.layers",
         )
         assert isinstance(vllm_config.additional_config, dict)

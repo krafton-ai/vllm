@@ -1249,6 +1249,36 @@ class LongcatFlashNgramForCausalLMConfig(VerifyAndUpdateConfig):
             compilation_config.cudagraph_mode = CUDAGraphMode.FULL
 
 
+class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
+    @staticmethod
+    def verify_and_update_config(vllm_config: "VllmConfig") -> None:
+        from vllm.platforms import current_platform
+        from vllm.v1.attention.backends.mla.prefill.registry import (
+            MLAPrefillBackendEnum,
+        )
+        from vllm.v1.attention.backends.registry import AttentionBackendEnum
+
+        attention = vllm_config.attention_config
+        spec = vllm_config.speculative_config
+        # The recurrent and draft caches share pages with MLA. Triton accepts
+        # the resulting block sizes without FlashInfer's 64-token restriction.
+        if spec is not None and spec.method == "dflash":
+            if attention.backend is None:
+                attention.backend_per_kind.setdefault(
+                    "mla_attention", AttentionBackendEnum.TRITON_MLA
+                )
+            if spec.attention_backend is None:
+                spec.attention_backend = AttentionBackendEnum.FLASH_ATTN
+        if (
+            current_platform.is_cuda()
+            and current_platform.is_device_capability_family(100)
+            and vllm_config.cache_config.cache_dtype.startswith("fp8")
+            and attention.mla_prefill_backend is None
+        ):
+            attention.mla_prefill_backend = MLAPrefillBackendEnum.FLASHINFER
+            attention.use_prefill_query_quantization = True
+
+
 MODELS_CONFIG_MAP: dict[str, type[VerifyAndUpdateConfig]] = {
     "AliceAIForCausalLM": AliceAIForCausalLMConfig,
     "ColBERTJinaRobertaModel": JinaRobertaModelConfig,
@@ -1304,6 +1334,7 @@ MODELS_CONFIG_MAP: dict[str, type[VerifyAndUpdateConfig]] = {
     "Qwen4ExpForCausalLM": Qwen4ExpForCausalLMConfig,
     "Qwen4ExpForConditionalGeneration": (Qwen4ExpForConditionalGenerationConfig),
     "Qwen4ExpMTP": Qwen4ExpMTPConfig,
+    "Raon1MiniForCausalLM": Raon1MiniForCausalLMConfig,
     "UnlimitedOCRForCausalLM": UnlimitedOCRForCausalLMConfig,
     "VoyageQwen3BidirectionalEmbedModel": VoyageQwen3BidirectionalEmbedModelConfig,
     "XLMRobertaModel": JinaRobertaModelConfig,

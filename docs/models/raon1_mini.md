@@ -6,16 +6,30 @@ vLLM's native MLA, hybrid cache, quantization, and speculative decoding interfac
 
 ## Serving
 
-After installing this branch, the intended entry point is:
+Build from the model-support PR checkout. The default B300 deployment follows
+[the public model card](https://huggingface.co/KRAFTON/Raon-1-mini-preview):
 
 ```bash
-vllm serve KRAFTON/Raon-1-mini-preview \
+VLLM_KV_CACHE_LAYOUT=BLNHC vllm serve KRAFTON/Raon-1-mini-preview \
+    --max-model-len 262144 --max-num-batched-tokens 16384 --max-num-seqs 128 \
+    --gpu-memory-utilization 0.85 --kv-cache-dtype fp8_e4m3 \
+    --enable-prefix-caching \
+    --speculative-config '{"method":"dflash","model":"KRAFTON/Raon-1-mini-preview-dflash2","num_speculative_tokens":7,"draft_sample_method":"probabilistic","kv_cache_dtype":"auto"}' \
     --reasoning-parser raon_1 \
-    --enable-auto-tool-choice --tool-call-parser raon_1
+    --enable-auto-tool-choice --tool-call-parser raon_1 \
+    --default-chat-template-kwargs '{"enable_thinking":true,"truncate_history_thinking":false}'
 ```
 
-Download the published checkpoint from Hugging Face. No model-specific
-Python plugin is required.
+Use `KRAFTON/Raon-1-mini-preview-nvfp4` for the NVFP4 target. Both targets use
+vLLM's native ModelOpt implementations. No model-specific Python plugin is
+required. Fused kernels require the CUDA Toolkit and a C++ compiler on first
+startup; subsequent starts reuse the compiled kernels.
+
+The [deployment recipe](../../recipes/models/KRAFTON/Raon-1-mini-preview.yaml)
+contains the B300 defaults and separate NVFP4 resource profiles for RTX 5090
+and DGX Spark. Candidate validation is separate from the released fork's
+published results. Use temperature 1.0, top_p 0.95 and top_k 20; set
+presence_penalty to 0 for coding/math and 1.5 for other tasks.
 
 ## Implementation and validation status
 
@@ -26,7 +40,9 @@ quality evaluation, and serving benchmarks must pass before public submission.
 - RDA applies its separate write/erase gate ratio after the value convolution;
   the rolling convolution history retains unscaled values.
 - mHC preserves four residual streams. The model exposes their concatenated
-  intermediate states for the native DFlash2 interface.
+  intermediate states for the native DFlash2 interface. DFlash CUDA graphs
+  size the staging buffer using the draft's declared `target_hidden_size`.
+  Target prefill runs eagerly; decode uses CUDA graphs.
 - MXFP8 experts use vLLM's ModelOpt loader. The checkpoint's E8M0 scale tensor
   suffix `weight_scale_inv` maps to the native `weight_scale` parameter.
   MXFP8 and NVFP4 reuse existing upstream quantization backends. Compatibility
@@ -34,10 +50,12 @@ quality evaluation, and serving benchmarks must pass before public submission.
   performance parity with production must be qualified for each format.
 - The `raon_1` parser handles reasoning markers and XML function calls,
   including streamed arguments and request-schema type conversion.
-- `--additional-config '{"raon_fast": true}'` enables the ported mHC and RDA
-  kernels. This path currently requires SM10x, tensor parallel size 1,
-  BF16 convolution history, FP32 recurrent state, and the default SD layout.
-  These kernels are awaiting validation against the current upstream runtime.
+- Fused mHC/RDA kernels are selected automatically on SM10x/SM12x at TP1
+  for the published model shape, BF16 convolution history, FP32 recurrent
+  state in SD layout, and at most seven speculative tokens. Other
+  configurations use the native path. `--additional-config '{"raon_fast":false}'`
+  disables the fused kernels; explicitly requesting `true` rejects unsupported
+  configurations. SM12x candidate qualification is still pending.
 - NVFP4, FP8 KV cache, prefix caching, and DFlash2 are part of the qualification
   scope. Their availability in upstream vLLM does not establish Raon correctness.
 - Pipeline parallelism, expert parallelism, and RecoverSSM are unsupported.

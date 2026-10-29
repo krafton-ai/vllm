@@ -1,0 +1,120 @@
+# yaml-language-server: $schema=https://recipes.vllm.ai/recipe.schema.json
+meta:
+  title: Raon-1-mini-preview
+  slug: raon-1-mini-preview
+  provider: KRAFTON
+  description: "28.8B-total / 4.3B-active hybrid RDA/MLA MoE with reasoning, tool calling, and DFlash2."
+  date_added: "2026-10-29"
+  date_updated: "2026-10-29"
+  tasks: [text]
+  default_hardware: b300
+  hardware:
+    rtx_5090: supported
+    dgx_spark_gb10: supported
+  default_variant:
+    rtx_5090: nvfp4
+    dgx_spark_gb10: nvfp4
+  related_recipes: []
+
+model:
+  model_id: KRAFTON/Raon-1-mini-preview
+  min_vllm_version: nightly
+  install:
+    pip:
+      command: "VLLM_USE_PRECOMPILED=1 uv pip install ."
+      note: "Build from the Raon model-support PR checkout. Support is not yet in an upstream release or nightly wheel. CUDA Toolkit and a C++ compiler are required for the model kernels."
+    docker: false
+  architecture: moe
+  parameter_count: 28.8B
+  active_parameters: 4.3B
+  context_length: 262144
+  default_frontend: python
+  base_args:
+    - --gpu-memory-utilization
+    - "0.85"
+    - --kv-cache-dtype
+    - fp8_e4m3
+    - --enable-prefix-caching
+    - --default-chat-template-kwargs
+    - '{"enable_thinking":true,"truncate_history_thinking":false}'
+  base_env:
+    VLLM_KV_CACHE_LAYOUT: BLNHC
+
+features:
+  tool_calling:
+    description: "Parse XML tool calls with automatic tool choice."
+    args: [--enable-auto-tool-choice, --tool-call-parser, raon_1]
+  reasoning:
+    description: "Return thinking separately from the final answer."
+    args: [--reasoning-parser, raon_1]
+  spec_decoding:
+    description: "DFlash2 with seven draft tokens and probabilistic draft sampling."
+    args:
+      - --speculative-config
+      - '{"method":"dflash","model":"KRAFTON/Raon-1-mini-preview-dflash2","num_speculative_tokens":7,"draft_sample_method":"probabilistic","kv_cache_dtype":"auto"}'
+
+opt_in_features: []
+
+variants:
+  default:
+    precision: mxfp8
+    vram_minimum_gb: 48
+    description: "Published MXFP8 checkpoint; native ModelOpt quantization."
+  nvfp4:
+    model_id: KRAFTON/Raon-1-mini-preview-nvfp4
+    precision: nvfp4
+    vram_minimum_gb: 32
+    description: "Published mixed-precision ModelOpt NVFP4 checkpoint."
+
+compatible_strategies:
+  - single_node_tp
+
+strategy_overrides:
+  single_node_tp:
+    tp: 1
+    hardware_overrides:
+      b300:
+        extra_args: [--max-model-len, "262144", --max-num-batched-tokens, "16384", --max-num-seqs, "128"]
+      rtx_5090:
+        extra_args: [--max-model-len, "32768", --max-num-batched-tokens, "2048", --max-num-seqs, "8", --kv-cache-memory-bytes, "3221225472", --async-scheduling]
+      dgx_spark_gb10:
+        extra_args: [--max-model-len, "131072", --max-num-batched-tokens, "2048", --max-num-seqs, "8", --kv-cache-memory-bytes, "3221225472", --async-scheduling]
+
+notes:
+  - title: Consumer Blackwell qualification
+    when:
+      hardware: [rtx_5090, dgx_spark_gb10]
+    body: "These NVFP4 resource profiles follow the released fork's model card. They have not yet been validated on this upstream candidate; the fork's hardware results do not establish candidate support."
+
+guide: |
+  ## Overview
+
+  Raon-1-mini has 18 Raon Delta Attention layers, seven NoPE MLA layers,
+  four-stream mHC, and SiTU MoE. The default deployment follows the public
+  model card: FP8 KV cache, prefix caching, DFlash2 with seven draft tokens,
+  reasoning and automatic tool calling on one GPU.
+
+  The model automatically selects its fused RDA/mHC kernels for supported
+  shapes, state formats and devices. Other configurations use the native path.
+  An explicit `--additional-config '{"raon_fast":false}'` disables those kernels
+  for comparison. The KV layout allows the recurrent, MLA and draft caches to
+  share pages. The draft uses its native cache dtype independently of target FP8 KV.
+
+  This recipe is being qualified on the upstream candidate. The 262,144-token
+  model context is a declared limit, not evidence of a completed long-context
+  accuracy evaluation. Pipeline parallelism, expert parallelism and RecoverSSM
+  are not implemented in this candidate.
+
+  ## Client usage
+
+  Use temperature 1.0, top_p 0.95, top_k 20, min_p 0, repetition_penalty 1.0
+  and frequency_penalty 0. Set presence_penalty to 0 for coding/math and 1.5
+  for other tasks. Keep thinking enabled and truncate_history_thinking false.
+  Reasoning is returned separately from the answer. Allow enough output tokens
+  for both thinking and the final response.
+
+  ## References
+
+  - [Model card and deployment settings](https://huggingface.co/KRAFTON/Raon-1-mini-preview)
+  - [NVFP4 checkpoint](https://huggingface.co/KRAFTON/Raon-1-mini-preview-nvfp4)
+  - [DFlash2 draft](https://huggingface.co/KRAFTON/Raon-1-mini-preview-dflash2)
