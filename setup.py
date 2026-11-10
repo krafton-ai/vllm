@@ -1433,6 +1433,11 @@ if _build_custom_ops():
 package_data = {
     "vllm": [
         "py.typed",
+        "models/raon1_nano/*.cu",
+        "models/raon1_nano/*.cuh",
+        "models/raon1_nano/*.json",
+        "models/raon1_nano/UPSTREAM.md",
+        "models/raon1_nano/ops/kda/LICENSE",
         "libs/*.so*",
         "model_executor/layers/fused_moe/configs/*.json",
         "model_executor/layers/quantization/utils/configs/*.json",

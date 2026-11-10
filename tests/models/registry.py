@@ -513,6 +513,11 @@ _TEXT_GENERATION_EXAMPLE_MODELS = {
         extras={"tiny-random": "tiny-random/qwen3-next-moe"},
         min_transformers_version="4.56.3",
     ),
+    "Raon1NanoForCausalLM": _HfExamplesInfo(
+        "KRAFTON/Raon-1-nano",
+        trust_remote_code=True,
+        dtype="bfloat16",
+    ),
     "Rnj1ForCausalLM": _HfExamplesInfo(
         "EssentialAI/rnj-1-instruct",
         is_available_online=False,
