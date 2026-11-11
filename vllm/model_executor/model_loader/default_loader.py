@@ -424,7 +424,11 @@ class DefaultModelLoader(BaseModelLoader):
 
         self._init_ep_weight_filter(model_config)
 
+        load_started = time.perf_counter()
         loaded_weights = model.load_weights(self.get_all_weights(model_config, model))
+        if self.counter_before_loading_weights == 0.0:
+            # Auxiliary-only models may not consume the root weight iterator.
+            self.counter_before_loading_weights = load_started
 
         self.counter_after_loading_weights = time.perf_counter()
         logger.info_once(

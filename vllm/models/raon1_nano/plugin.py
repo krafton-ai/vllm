@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Register Nano and its vLLM compatibility adapters without initializing CUDA."""
 
 
@@ -24,6 +25,10 @@ def register():
     mac.MODEL_ARCH_CONFIG_CONVERTORS["raon1_nano"] = _RaonModelArchConfigConvertor
     ModelRegistry.register_model(
         "Raon1NanoForCausalLM", "vllm.models.raon1_nano.nano:Raon1NanoForCausalLM"
+    )
+    mac.MODEL_ARCH_CONFIG_CONVERTORS["raon1_nano_mtp"] = _RaonModelArchConfigConvertor
+    ModelRegistry.register_model(
+        "Raon1NanoMTP", "vllm.models.raon1_nano.mtp:Raon1NanoMTP"
     )
     _install_mamba_index_dtype_guard()
     _install_mla_batch_invariant_decode()
@@ -85,7 +90,7 @@ def _install_mla_batch_invariant_decode() -> None:
         return 1
 
     triton_mla._compute_num_kv_splits = _fixed_num_kv_splits
-    triton_mla._raon_mla_fixed_split = True
+    triton_mla._raon_mla_fixed_split = True  # type: ignore[attr-defined]
     log.info(
         "raon_vllm: MLA decode pinned to num_kv_splits=1 (fixed split-KV, fp32 "
         "reduction)"
@@ -130,5 +135,5 @@ def _install_mamba_index_dtype_guard() -> None:
             idx_mapping = idx_mapping.to(dtype=torch.int64)
         return original(self, idx_mapping, num_sampled, num_computed_tokens)
 
-    MambaHybridModelState.postprocess_state = postprocess_state
-    MambaHybridModelState._raon_int64_guard = True
+    MambaHybridModelState.postprocess_state = postprocess_state  # type: ignore[method-assign]
+    MambaHybridModelState._raon_int64_guard = True  # type: ignore[attr-defined]

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Dense Raon-1 nano decoder and vLLM weight-loading adapter.
 
 RDA/MLA branches transform an mHC stream carrier; each MHCSite owns its
@@ -355,7 +356,7 @@ def _install_graph_replay_counter() -> None:
         _GRAPH_REPLAYS["n"] += 1
         return orig(self, *a, **k)
 
-    replay._raon_counted = True
+    replay._raon_counted = True  # type: ignore[attr-defined]
     g.replay = replay
     import atexit
 
@@ -378,7 +379,9 @@ class RaonNanoModelBase(nn.Module, HasInnerState, IsHybrid):
         if self.quant_config is not None:
             raise ValueError("Nano recipe supports unquantized BF16 weights only")
         if vllm_config.speculative_config is not None:
-            raise ValueError("Raon-1 nano does not support speculative decoding")
+            from .mtp_weights import validate_speculation
+
+            validate_speculation(vllm_config)
         self.model = RaonModel(
             vllm_config=vllm_config, prefix=maybe_prefix(prefix, "model")
         )
@@ -397,7 +400,7 @@ class RaonNanoModelBase(nn.Module, HasInnerState, IsHybrid):
         try:
             from .kda_frontend_fused import prewarm_frontend_fused
 
-            prewarm_frontend_fused(device=torch.cuda.current_device())
+            prewarm_frontend_fused(device=torch.accelerator.current_device_index())
         except Exception as _e:
             print(f"[raon-kda] FUSED_FLOW prewarm skipped: {_e}", flush=True)
 
@@ -500,7 +503,11 @@ class RaonNanoModelBase(nn.Module, HasInnerState, IsHybrid):
             hf_config.linear_attn_config["num_heads"],
             hf_config.linear_attn_config["head_dim"],
             conv_kernel_size=hf_config.linear_attn_config["short_conv_kernel_size"],
-            num_spec=0,
+            num_spec=(
+                vllm_config.speculative_config.num_speculative_tokens
+                if vllm_config.speculative_config is not None
+                else 0
+            ),
         )
 
     @classmethod

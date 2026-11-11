@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Raon-1 nano PLE layout 2, tied embeddings and RDA output normalization.
 
 The dense decoder lives in model.py. Only TP=PP=1 is supported. Attention
@@ -87,8 +88,6 @@ class PerLayerInputGate(nn.Module):
 
 class Raon1NanoForCausalLM(RaonNanoModelBase):
     def __init__(self, *, vllm_config, prefix: str = "") -> None:
-        if vllm_config.speculative_config is not None:
-            raise ValueError("Raon-1 nano does not support speculative decoding")
         super().__init__(vllm_config=vllm_config, prefix=prefix)
         config = self.config
         # The release uses rms_norm_eps for RDA output normalization.

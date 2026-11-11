@@ -8,7 +8,8 @@ The Nano adapter is based on the Raon-1 mini implementation in
   Nano retains its latent normalization and graph-stable scale buffers.
 - `rda_base.py`, `rda_metadata.py`, and `rda_recurrent.py` derive from Mini's
   RDA primitives. Mini's speculative-decoding warmup, state relabeling, and
-  split-prefill hooks are excluded. Nano rejects speculative decoding.
+  split-prefill hooks are excluded. The Nano MTP adapter uses the retained
+  speculative recurrence/conv state path; see `MTP.md` for validation status.
 - `rda.py` preserves Nano's write gate and numerical adapters. `nano.py`
   preserves per-layer embeddings, tied weights, and output normalization.
 

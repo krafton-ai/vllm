@@ -1809,6 +1809,16 @@ _SPECULATIVE_DECODING_EXAMPLE_MODELS = {
         "Qwen/Qwen3.5-35B-A3B",
         speculative_model="Qwen/Qwen3.5-35B-A3B",
     ),
+    "Raon1NanoMTP": _HfExamplesInfo(
+        "KRAFTON/Raon-1-nano",
+        speculative_model="KRAFTON/Raon-1-nano",
+        trust_remote_code=True,
+        dtype="bfloat16",
+        enforce_eager=True,
+        use_original_num_layers=True,
+        max_model_len=2048,
+        max_num_seqs=2,
+    ),
     "Step3p5MTP": _HfExamplesInfo(
         "stepfun-ai/Step-3.5-Flash",
         speculative_model="stepfun-ai/Step-3.5-Flash",

@@ -47,6 +47,7 @@ MTPModelTypes = Literal[
     "exaone_moe_mtp",
     "exaone4_5_mtp",
     "qwen3_next_mtp",
+    "raon1_nano_mtp",
     "qwen3_5_mtp",
     "longcat_flash_mtp",
     "bailing_hybrid_v3_mtp",
@@ -504,6 +505,17 @@ class SpeculativeConfig:
             n_predict = getattr(hf_config, "num_nextn_predict_layers", 1)
             hf_config.update(
                 {"n_predict": n_predict, "architectures": ["NemotronHMTPModel"]}
+            )
+
+        if hf_config.model_type == "raon1_nano":
+            hf_config.model_type = "raon1_nano_mtp"
+        if hf_config.model_type == "raon1_nano_mtp":
+            hf_config.update(
+                {
+                    "n_predict": 1,
+                    "num_nextn_predict_layers": 1,
+                    "architectures": ["Raon1NanoMTP"],
+                }
             )
 
         if hf_config.model_type == "qwen3_next":
