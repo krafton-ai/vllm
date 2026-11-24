@@ -19,6 +19,8 @@ The rule is benchmark-derived; re-measure before changing it.
 
 import os
 
+from vllm.platforms import current_platform
+
 _ENV = "RAON_KDA_PREFILL_VSPLIT"
 _BUILD_DIR_ENV = "RAON_KDA_VSPLIT_BUILD_DIR"
 _SOURCE = os.path.join(os.path.dirname(__file__), "vendored", "flashkda-vsplit")
@@ -30,7 +32,13 @@ def enabled() -> bool:
     value = os.environ.get(_ENV, "0")
     if value not in ("0", "adaptive"):
         raise ValueError(f"{_ENV} must be 0 or adaptive; got {value!r}")
-    return value == "adaptive"
+    if value != "adaptive":
+        return False
+    capability = current_platform.get_device_capability()
+    return capability is not None and (
+        capability.major == 10
+        or (capability.major, capability.minor) in ((12, 0), (12, 1))
+    )
 
 
 def select_mode(query_lengths, num_spec_decodes, heads, sms):

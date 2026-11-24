@@ -22,7 +22,6 @@ import socket
 PRODUCTION_ENV = {
     "RAON_RDA_FUSED": "1",
     "RAON_BATCH_INVARIANT": "0",
-    "RAON_KDA_PREFILL": "flashkda",
     "RAON_KDA_DECODE": "fused",
     "RAON_KDA_SGL_FUSED": "1",
     "RAON_MHC_PHI_GEMM_DIRECT": "all-pad",

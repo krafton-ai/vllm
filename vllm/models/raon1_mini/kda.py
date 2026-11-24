@@ -295,39 +295,11 @@ class RaonKDAAttention(RaonRDABase):
         # recurrent fallback; this measures whether FlashKDA-at-T=1 beats it.
         self.kda_decode_backend = os.environ.get("RAON_KDA_DECODE", "fused")
 
-        # RAON_KDA_PREFILL: override the prefill backend from the environment.
-        #
-        # vLLM resolves this from additional_config["kda_prefill_backend"], fed
-        # by the --kda-prefill-backend flag, and its "auto" default picks
-        # FlashKDA on any supported card. On raon-1-mini the FlashKDA path can
-        # ask the workspace arena for more than profiling sized it for, after the
-        # arena is locked --
-        #   AssertionError: Workspace is locked but allocation from
-        #   'kda.py:451:_forward' requires 368.75 MB, current size is 240.00 MB
-        # Halving max_num_batched_tokens does not help: the arena halves with it
-        # and the shortfall is unchanged. "triton" avoids it.
-        #
-        # An env var rather than the flag so launchers that cannot pass
-        # --kda-prefill-backend can still select the backend.
-        #
-        # Set AFTER super().__init__, deliberately. The parent builds
-        # _flashkda_buffer_specs while resolving the backend; leaving that work
-        # done and unused is harmless -- the specs are descriptors, and the
-        # arena is only asked for inside the flashkda branch this skips.
-        _prefill_override = os.environ.get("RAON_KDA_PREFILL")
-        if _prefill_override:
-            if _prefill_override not in ("auto", "flashkda"):
-                raise ValueError(
-                    "RAON_KDA_PREFILL must be auto or flashkda, got "
-                    f"{_prefill_override!r}"
-                )
-            self.kda_prefill_backend = _prefill_override
-        # Prefill runs on FlashKDA only; there is no Triton chunk prefill.
-        if self.kda_prefill_backend != "flashkda":
-            raise RuntimeError(
-                "raon-1-mini RDA prefill needs FlashKDA: CUDA SM90/SM10x/SM12x, "
-                "bfloat16 and a bounded gate"
-            )
+        if (
+            self.kda_prefill_backend == "triton"
+            and vllm_config.speculative_config is not None
+        ):
+            raise ValueError("Triton RDA prefill requires speculative decoding off.")
 
         # RAON_RDA_FUSED=1: skip the torch ratio chain in forward() and fold
         # ratio-compute + v-scale into one Triton launch per seam.
@@ -762,7 +734,8 @@ class RaonKDAAttention(RaonRDABase):
         # verify step with spec (the plain one's pool contract never holds there).
         self.kda_sgl_fused = _sgl_on and _spec_k == 0
         self.kda_sgl_fused_spec = _sgl_on and _spec_k > 0
-        _kda_vsplit.validate(vllm_config)
+        if self.kda_prefill_backend == "flashkda":
+            _kda_vsplit.validate(vllm_config)
         if self.kda_sgl_fused_spec:
             from . import kda_sgl_fused_spec as _sgl_fused_spec
 
@@ -1835,8 +1808,31 @@ class RaonKDAAttention(RaonRDABase):
                         final_state=final_state[: initial_state.shape[0]],
                         workspace=workspace,  # 0.28.0: required scratch buffer
                     )
+                elif self.kda_prefill_backend == "triton":
+                    from vllm.models.kimi_k3.nvidia.ops.third_party.kda import (
+                        chunk_kda_with_fused_gate,
+                    )
+
+                    core_attn_out_non_spec, last_recurrent_state = (
+                        chunk_kda_with_fused_gate(
+                            q=q_ns,
+                            k=k_ns,
+                            v=v_ns,
+                            raw_g=g1_ns,
+                            raw_beta=beta_ns,
+                            A_log=self.A_log,
+                            g_bias=self.dt_bias,
+                            initial_state=initial_state,
+                            output_final_state=True,
+                            lower_bound=self.gate_lower_bound,
+                            use_qk_l2norm_in_kernel=True,
+                            cu_seqlens=non_spec_query_start_loc,
+                        )
+                    )
                 else:
-                    raise RuntimeError("RDA prefill runs on FlashKDA only")
+                    raise RuntimeError(
+                        f"Unsupported RDA prefill: {self.kda_prefill_backend}"
+                    )
                 if self.kda_chunk_replay:
                     # The prefill OUTPUT above points into chunk_kda's REUSED
                     # triton workspace; the commit replay below launches the same

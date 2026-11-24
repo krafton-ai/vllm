@@ -2,10 +2,11 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """raon-1-mini RDA layer: projections, recurrent state layout and prefill backend.
 
-The forward pass lives in kda.py (``RaonKDAAttention``). Prefill runs FlashKDA
-(``vllm._flashkda_C``); speculative and fallback decode run rda_recurrent.py.
+The forward pass lives in kda.py (``RaonKDAAttention``). Prefill uses FlashKDA
+or vendored Triton KDA.
 """
 
+import os
 from collections.abc import Callable
 
 import torch
@@ -154,6 +155,7 @@ def is_flashkda_supported(
     head_dim: int,
     dtype: torch.dtype,
     lower_bound: float | None,
+    state_dtype: torch.dtype = torch.float32,
 ) -> bool:
     if not current_platform.is_cuda():
         return False
@@ -163,6 +165,7 @@ def is_flashkda_supported(
         and capability.major in (9, 10, 12)
         and head_dim == 128
         and dtype == torch.bfloat16
+        and state_dtype in (torch.float32, torch.bfloat16)
         and lower_bound is not None
     )
 
@@ -212,18 +215,30 @@ def resolve_rda_prefill_backend(
     head_dim: int,
     dtype: torch.dtype,
     lower_bound: float | None,
+    state_dtype: torch.dtype = torch.float32,
 ) -> str:
     if backend not in ("auto", "triton", "flashkda"):
         raise ValueError(f"Unsupported RDA prefill backend: {backend}")
-    supported = is_flashkda_supported(head_dim, dtype, lower_bound)
+    supported = is_flashkda_supported(head_dim, dtype, lower_bound, state_dtype)
     if backend == "flashkda" and not supported:
         raise RuntimeError(
             "FlashKDA requires CUDA SM90/SM10x/SM12x, bfloat16, "
-            "head_dim=128, and a bounded RDA gate."
+            "head_dim=128, FP32 or BF16 state, and a bounded RDA gate."
         )
     if supported and backend != "triton":
         logger.info_once("Using the FlashKDA RDA prefill backend.")
         return "flashkda"
+    if (
+        not current_platform.is_cuda()
+        or dtype != torch.bfloat16
+        or head_dim != 128
+        or state_dtype != torch.float32
+    ):
+        raise RuntimeError(
+            "Triton RDA prefill requires CUDA, BF16 inputs, head_dim=128,"
+            " and FP32 recurrent state."
+        )
+    logger.info_once("Using the vendored Triton RDA prefill backend.")
     return "triton"
 
 
@@ -418,11 +433,13 @@ class RaonRDABase(GatedDeltaNetAttention):
             if isinstance(additional_config, dict)
             else "auto"
         )
+        state_dtype = self.get_state_dtype()[1]
         self.kda_prefill_backend = resolve_rda_prefill_backend(
-            backend,
+            os.environ.get("RAON_KDA_PREFILL") or backend,
             self.head_dim,
             vllm_config.model_config.dtype,
             self.gate_lower_bound,
+            state_dtype,
         )
         self._flashkda_buffer_specs: (
             tuple[tuple[tuple[int, ...], torch.dtype], ...] | None
@@ -436,7 +453,7 @@ class RaonRDABase(GatedDeltaNetAttention):
             workspace_size = torch.ops._flashkda_C.get_workspace_size(T, H, N)
             self._flashkda_buffer_specs = (
                 ((1, T, H, D), self.model_config.dtype),
-                ((N, H, D, D), self.get_state_dtype()[1]),
+                ((N, H, D, D), state_dtype),
                 ((workspace_size,), torch.uint8),
             )
 
