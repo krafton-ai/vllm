@@ -2,11 +2,17 @@
 
 The checkpoint carries the steering vectors as ordinary tensors "model.layers.<L>.block_sparse_moe.reasoning_effort_steering"
 (HF release naming: "model.layers.<L>.moe.reasoning_effort_steering"), F32 [hidden_size] at alpha 1, and the alpha per
-effort and the steered layers in config.json "reasoning_effort_steering": {"alpha": {...}, "layers": [...]}. While vLLM
-verifies the model config, configure() sets RAON_REASONING_EFFORT_STEERING to {"alpha": {effort: alpha}, "layers":
-[L, ...], "id": <checkpoint identity>}, which the engine processes inherit. Unset, every
-function here is a no-op and the model is unchanged (load_weights then drops steering tensors). A request with
-reasoning effort e adds alpha[e] * c_L to the MoE output of each listed layer. A request without an effort uses 0.
+effort and the steered layers in config.json "reasoning_effort_steering": {"alpha":
+{...}, "layers": [...], "default": <effort>}. While vLLM verifies the model config,
+configure() sets RAON_REASONING_EFFORT_STEERING to {"alpha": {effort: alpha}, "layers":
+[L, ...], "default": <effort or null>, "id": <checkpoint identity>}, which the engine
+processes inherit. Unset, every function here is a no-op and the model is unchanged
+(load_weights then drops steering tensors). A request with reasoning effort e adds
+alpha[e] * c_L to the MoE output of each listed layer. A request without an effort uses
+the default effort (alpha 0 when none is declared). "none" turns thinking off in the
+chat template and is never steered. The effort names are those of the alpha table, e.g.
+low, medium, high, xhigh and max; older checkpoints that declare low, medium and high keep
+working.
 
   API server  chat completions and /v1/responses: the effort the chat template
               sees selects alpha, which travels as extra_args[ALPHA_KEY] tagged with a per-process secret.
@@ -48,7 +54,9 @@ def _config():
         return None
     config = json.loads(raw)
     alpha = config["alpha"]
-    assert set(config) == {"alpha", "layers", "id"} and isinstance(alpha, dict), config
+    assert set(config) == {"alpha", "layers", "default", "id"}, config
+    assert isinstance(alpha, dict), config
+    assert config["default"] is None or config["default"] in alpha, config
     assert config["layers"] and all(type(L) is int and L >= 0 for L in config["layers"]), config
     assert all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in alpha.values()), alpha
     return config
@@ -61,12 +69,18 @@ _loaded: set[int] = set()
 KEY_RE = re.compile(r"model\.layers\.(\d+)\.(?:block_sparse_moe|moe)\.reasoning_effort_steering")
 
 
+NO_THINKING = "none"  # thinking off in the chat template; never steered
+
+
 def alpha_for(effort) -> float:
     """reasoning effort -> alpha; ValueError for an effort the deployment does not define."""
     if effort is None:
+        effort = CONFIG["default"]
+    if effort is None or effort == NO_THINKING:
         return 0.0
     if effort not in CONFIG["alpha"]:
-        raise ValueError(f"reasoning_effort must be one of {', '.join(CONFIG['alpha'])}; got {effort!r}")
+        names = ", ".join(dict.fromkeys([NO_THINKING, *CONFIG["alpha"]]))
+        raise ValueError(f"reasoning_effort must be one of {names}; got {effort!r}")
     return float(CONFIG["alpha"][effort])
 
 
@@ -117,21 +131,30 @@ def configure(hf_config, model: str) -> None:
     """API server, while vLLM verifies the model config: enable steering when config.json declares it.
 
     Sets RAON_REASONING_EFFORT_STEERING, which the engine and worker processes inherit, from
-    config.json "reasoning_effort_steering": {"alpha": {low, medium, high}, "layers": [...]}. The checkpoint's
-    weights carry the vectors; load_weights checks that every listed layer received one.
+    config.json "reasoning_effort_steering": {"alpha": {effort: alpha, ...},
+    "layers": [...], "default": effort}. "default" is optional and must name an
+    alpha entry. The checkpoint's weights carry the vectors; load_weights checks
+    that every listed layer received one.
     """
     global CONFIG
     steering = getattr(hf_config, "reasoning_effort_steering", None)
     if not steering:
         return
     alpha, layers = steering.get("alpha"), steering.get("layers")
-    if (not isinstance(alpha, dict) or set(alpha) != {"low", "medium", "high"}
+    default = steering.get("default")
+    if (not isinstance(alpha, dict) or not alpha
+            or any(not isinstance(k, str) for k in alpha)
+            or alpha.get(NO_THINKING, 0) != 0
             or any(type(v) not in (int, float) or not 0 <= v < float("inf") for v in alpha.values())
-            or not layers or not all(type(L) is int and L >= 0 for L in layers)):
-        raise ValueError("config.json reasoning_effort_steering needs alpha for exactly low, medium and high "
-                         "(non-negative) and the steered layers")
+            or not layers or not all(type(L) is int and L >= 0 for L in layers)
+            or (default is not None and (default not in alpha or default == NO_THINKING))):
+        raise ValueError(
+            "config.json reasoning_effort_steering needs a non-negative alpha per "
+            f"effort name ({NO_THINKING!r} only with 0), the steered layers, and a "
+            f"default that names an alpha entry other than {NO_THINKING!r}"
+        )
     identity = json.dumps({"model": model, "steering": steering}, sort_keys=True)
-    value = json.dumps({"alpha": alpha, "layers": sorted(layers),
+    value = json.dumps({"alpha": alpha, "layers": sorted(layers), "default": default,
                         "id": __import__("hashlib").sha256(identity.encode()).hexdigest()[:16]}, sort_keys=True)
     os.environ[ENV] = value
     CONFIG = _config()
