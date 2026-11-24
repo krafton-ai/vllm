@@ -68,7 +68,7 @@ from .mla_align import install_mla_output_gate_two_round
 from .mla_proj_align import apply_module as apply_mla_proj_persistent
 from .mhc import _AGGNORM_FUSED_ENV as _MHC_AGGNORM_FUSED_ENV
 from .mhc import RaonMHC
-from . import raon_phase
+from . import effort_steering, raon_phase
 from .mlp_align import apply_module as apply_dense_mlp_persistent
 from .mlp_align import apply_situ_native as apply_dense_mlp_situ_native
 from .moe_align import _combine_ep_partial_fp32_loop as moe_combine_ep_partial_loop
@@ -1537,7 +1537,9 @@ class RaonDecoderLayer(nn.Module):
                 self.block_sparse_moe, layer_idx=layer_idx
             )
             self.mlp = self.block_sparse_moe
+            effort_steering.attach(self.block_sparse_moe, layer_idx, config.hidden_size, vllm_config)
         else:
+            effort_steering.attach(None, layer_idx, config.hidden_size, vllm_config)
             self.mlp = RaonMLP(
                 hidden_size=config.hidden_size,
                 intermediate_size=config.intermediate_size,
@@ -1602,7 +1604,7 @@ class RaonDecoderLayer(nn.Module):
             )
             return self.mlp_raon_mhc(
                 s,
-                lambda a: self.mlp(a),
+                lambda a: self._mlp_out(a),
                 branch_norm_weight=self.post_attention_layernorm.weight,
                 branch_norm_eps=self.post_attention_layernorm.variance_epsilon,
             )
@@ -1612,7 +1614,13 @@ class RaonDecoderLayer(nn.Module):
                 hidden_states=self.input_layernorm(a), positions=positions
             ),
         )
-        return self.mlp_raon_mhc(s, lambda a: self.mlp(self.post_attention_layernorm(a)))
+        return self.mlp_raon_mhc(s, lambda a: self._mlp_out(self.post_attention_layernorm(a)))
+
+    def _mlp_out(self, a: torch.Tensor) -> torch.Tensor:
+        """The MLP branch; a steered MoE layer adds its per-token reasoning-effort vector (effort_steering.py)."""
+        out = self.mlp(a)
+        c = getattr(self.mlp, "raon_effort_c", None)
+        return out if c is None else effort_steering.steer(out, c)
 
 
 class RaonModel(nn.Module, EagleModelMixin):
@@ -1659,6 +1667,7 @@ class RaonModel(nn.Module, EagleModelMixin):
         _, _, self.layers = make_layers(
             config.num_hidden_layers, get_layer, prefix=f"{prefix}.layers"
         )
+        effort_steering.check_attached()
         # norm_f parity site — QuACK-backed to match the trainer's final
         # decoder.final_layernorm (megatron KimiRMSNorm backend='quack').
         self.norm = QuackRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -2176,8 +2185,13 @@ class Raon1MiniForCausalLM(nn.Module, SupportsEagle3, HasInnerState, IsHybrid):
         # AutoWeightsLoader routes ``model.*`` into RaonModel.load_weights and
         # loads ``lm_head.weight`` itself. MultiHeadLatentAttention's
         # kv_b_proj absorption runs from the loader's generic post-load hook.
-        loaded = AutoWeightsLoader(self).load_weights(weights, mapper=self.hf_to_vllm_mapper)
+        # Steering vectors (model.layers.<L>.{block_sparse_moe,moe}.reasoning_effort_steering) are not parameters:
+        # effort_steering takes them before the name mapper; without steering they are dropped.
+        loaded = AutoWeightsLoader(self).load_weights(effort_steering.take_vectors(weights),
+                                                      mapper=self.hf_to_vllm_mapper)
         self._offline_weights_loaded = True
+        if not self._deferred_refit_active:
+            effort_steering.check_loaded()
         if self._deferred_refit_active:
             self._deferred_refit_batches += 1
         else:

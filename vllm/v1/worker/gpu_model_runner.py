@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import os
 import functools
 import gc
 import itertools
@@ -285,6 +286,10 @@ def nans_to_dict(counts: list[int], req_id_to_index: dict[str, int]) -> dict[str
         req_id: int(counts[i]) if i < len(counts) else 0
         for req_id, i in req_id_to_index.items()
     }
+
+
+# raon-1-mini reasoning-effort steering (vllm/models/raon1_mini/effort_steering.py); set before workers start.
+_RAON_EFFORT_STEERING = bool(os.environ.get("RAON_REASONING_EFFORT_STEERING"))
 
 
 # Wrapper for ModelRunnerOutput to support overlapped execution.
@@ -2344,6 +2349,10 @@ class GPUModelRunner(
                 self.input_batch, num_scheduled_tokens, num_sampled_tokens
             )
 
+        if _RAON_EFFORT_STEERING:
+            from vllm.models.raon1_mini import effort_steering
+
+            effort_steering.runner_v1_prepare_inputs(self)
         return (
             logits_indices,
             spec_decode_metadata,

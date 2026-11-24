@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import os
 import asyncio
 import time
 from collections.abc import AsyncGenerator
@@ -112,6 +113,13 @@ class OpenAIServingChatBatch(OpenAIServingChat):
         returns one choice per conversation indexed 0, 1, ..., N-1.
         Streaming, tool use, and beam search are not supported.
         """
+        if os.environ.get("RAON_REASONING_EFFORT_STEERING"):
+            # raon-1-mini reasoning effort: tag the request's steering alpha, or refuse an unknown effort.
+            from vllm.models.raon1_mini import effort_steering
+
+            error = effort_steering.batch_request_error(self, request)
+            if error is not None:
+                return self.create_error_response(error)
         tokenizer = self.renderer.tokenizer
         assert tokenizer is not None
         single_requests = [

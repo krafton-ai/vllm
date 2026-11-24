@@ -457,6 +457,10 @@ class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
         import vllm.models.raon1_mini as raon
 
         raon.apply_precision_profile(profile)
+        # Reasoning-effort steering, when config.json declares it; the engine processes inherit the setting.
+        from vllm.models.raon1_mini import effort_steering
+
+        effort_steering.configure(hf_config, model_config.model)
         if profile == "nvfp4":
             # vLLM's ModelOpt methods (Marlin) own every quantized layer.
             return

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import os
 import time
 from collections.abc import Mapping
 from typing import Any, Literal
@@ -381,7 +382,7 @@ class InputProcessor:
                     )
                 )
 
-        return EngineCoreRequest(
+        request = EngineCoreRequest(
             request_id=request_id,
             prompt_token_ids=prompt_token_ids,
             prompt_embeds=prompt_embeds,
@@ -398,6 +399,12 @@ class InputProcessor:
             resumable=resumable,
             session_id=session_id,
         )
+        if os.environ.get("RAON_REASONING_EFFORT_STEERING"):
+            # raon-1-mini reasoning effort: keep only API-tagged alpha and salt the prefix cache per alpha.
+            from vllm.models.raon1_mini import effort_steering
+
+            request = effort_steering.engine_request(request)
+        return request
 
     def _validate_prompt_len(
         self,

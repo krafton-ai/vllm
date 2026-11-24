@@ -17,6 +17,7 @@ hidden. Prefer utility functions defined elsewhere and call them from here,
 instead of embedding feature-specific logic directly.
 """
 
+import os
 import functools
 import gc
 import time
@@ -153,6 +154,11 @@ from vllm.v1.worker.utils import (
 from vllm.v1.worker.workspace import use_workspace_lane
 
 logger = init_logger(__name__)
+
+
+
+# raon-1-mini reasoning-effort steering (vllm/models/raon1_mini/effort_steering.py); set before workers start.
+_RAON_EFFORT_STEERING = bool(os.environ.get("RAON_REASONING_EFFORT_STEERING"))
 
 
 class GPUModelRunner(LoRAModelRunnerMixin):
@@ -1009,6 +1015,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             self.model_state.apply_staged_writes()
         if self.sampler is not None:
             self.sampler.apply_staged_writes()
+        if _RAON_EFFORT_STEERING:
+            from vllm.models.raon1_mini import effort_steering
+
+            effort_steering.runner_v2_add_requests(self, scheduler_output)
 
     def update_requests(self, scheduler_output: SchedulerOutput) -> None:
         # Add new blocks and update num_computed_tokens for the existing requests.
@@ -1298,6 +1308,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 else None
             ),
         )
+        if _RAON_EFFORT_STEERING:
+            # raon-1-mini reasoning effort: each scheduled token's steering alpha (PCP is refused with steering).
+            from vllm.models.raon1_mini import effort_steering
+
+            effort_steering.runner_v2_prepare_inputs(self, input_batch)
         return pcp.maybe_partition_pcp_batch(self.pcp_manager, input_batch)
 
     def prepare_attn(
