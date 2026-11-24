@@ -1,4 +1,11 @@
 <!-- markdownlint-disable MD001 MD041 -->
+> [!NOTE]
+> **This is a fork of [vLLM](https://github.com/vllm-project/vllm) maintained by [KRAFTON AI](https://github.com/krafton-ai)
+> to support the Raon model family.** The `raon` branch is vLLM v0.28.0 plus native Raon support:
+>
+> - **Raon-1-mini** — [KRAFTON/Raon-1-mini-preview](https://huggingface.co/KRAFTON/Raon-1-mini-preview)
+> - **Raon-1-nano** — [KRAFTON/Raon-1-nano](https://huggingface.co/KRAFTON/Raon-1-nano)
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-dark.png">
