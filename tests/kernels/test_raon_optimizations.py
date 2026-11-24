@@ -72,8 +72,8 @@ def test_off_selects_nothing(monkeypatch, capability, mode):
     [
         (
             (8, 9),
-            {"marlin_single_row_routing", "mhc_split_k"},
-            {"marlin_single_row_routing", "mhc_split_k"},
+            {"marlin_single_row_routing", "mhc_split_k", "mhc_single_row"},
+            {"marlin_single_row_routing", "mhc_split_k", "mhc_single_row"},
         ),
         (
             (10, 3),
@@ -82,8 +82,12 @@ def test_off_selects_nothing(monkeypatch, capability, mode):
         ),
         (
             (11, 0),
-            {"marlin_single_row_routing"},
-            {"marlin_single_row_routing", "marlin_resident_bf16"},
+            {"marlin_single_row_routing", "mhc_single_row"},
+            {
+                "marlin_single_row_routing",
+                "marlin_resident_bf16",
+                "mhc_single_row",
+            },
         ),
         (
             (9, 0),
@@ -130,20 +134,20 @@ def test_any_device_entry(monkeypatch):
     assert _selected_with(monkeypatch, "1") == set()
 
 
-def test_exclude(monkeypatch, fake_table):
+def test_exclude(monkeypatch):
     monkeypatch.setenv("VLLM_RAON_OPTIMIZATIONS", "1")
-    monkeypatch.setenv("VLLM_RAON_OPTIMIZATIONS_EXCLUDE", "opt_a")
+    monkeypatch.setenv("VLLM_RAON_OPTIMIZATIONS_EXCLUDE", "mhc_split_k")
     _select_device(monkeypatch, (8, 9))
-    assert not raon_optimizations.enabled("opt_a")
-    assert raon_optimizations.enabled("opt_b")
+    assert not raon_optimizations.enabled("mhc_split_k")
+    assert raon_optimizations.enabled("mhc_single_row")
 
 
-def test_exclude_unknown(monkeypatch, fake_table):
+def test_exclude_unknown(monkeypatch):
     monkeypatch.setenv("VLLM_RAON_OPTIMIZATIONS", "1")
     monkeypatch.setenv("VLLM_RAON_OPTIMIZATIONS_EXCLUDE", "no_such_feature")
     monkeypatch.setattr(raon_optimizations.current_platform, "is_cuda", lambda: True)
     with pytest.raises(ValueError):
-        raon_optimizations.enabled("opt_a")
+        raon_optimizations.enabled("mhc_split_k")
 
 
 @pytest.mark.parametrize(

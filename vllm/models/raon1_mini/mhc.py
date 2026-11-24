@@ -1644,9 +1644,27 @@ class RaonMHC(nn.Module):
             and 0 < v.shape[0] <= _SPLIT_K_MAX_ROWS
         )
 
+    def _use_single_row_mhc(self, s: Tensor) -> bool:
+        return (
+            s.shape == (1, 4, 2560)
+            and s.is_cuda
+            and (
+                envs.VLLM_RAON_MHC_SINGLE_ROW
+                or raon_optimizations.enabled("mhc_single_row", s.device.index)
+            )
+            and s.dtype == torch.bfloat16
+            and s.is_contiguous()
+            and self.phi.dtype == torch.bfloat16
+            and self.phi.is_contiguous()
+        )
+
     def _forward_fused(self, s: Tensor, branch: Callable[[Tensor], Tensor]) -> Tensor:
         """~9 launches per site (vs 29 on the torch path): cublas logits,
         square, torch mean, head epilogue, torch chart einsum, mix."""
+        if self._use_single_row_mhc(s):
+            from .mhc_single_row import fused_single_row_mhc
+
+            return fused_single_row_mhc(self, s, branch, _EPS)
         T, n, C = s.shape
         # Logits GEMM. Batch-invariant (fixed K-schedule) when enabled, else the
         # same cuBLAS kernel as the torch path (M-dependent -> batch-variant).
