@@ -187,6 +187,8 @@ if TYPE_CHECKING:
     VLLM_MARLIN_USE_ATOMIC_ADD: bool = False
     VLLM_RAON_OPTIMIZATIONS: str = "1"
     VLLM_RAON_OPTIMIZATIONS_EXCLUDE: str = ""
+    VLLM_RAON_MLP_SEGMENT_GRAPH_BUCKETS: str = ""
+    VLLM_RAON_MLP_SEGMENT_GRAPH_PRECAPTURE: bool = False
     VLLM_MARLIN_SINGLE_ROW_ROUTING: bool = False
     VLLM_MARLIN_REUSE_SINGLE_ROW_SCRATCH: bool = False
     VLLM_MARLIN_RESIDENT_BF16_MIN_ROWS: int = 0
@@ -1535,6 +1537,16 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Comma-separated optimization names to leave off under the switch above.
     "VLLM_RAON_OPTIMIZATIONS_EXCLUDE": lambda: os.environ.get(
         "VLLM_RAON_OPTIMIZATIONS_EXCLUDE", ""
+    ),
+    # Comma-separated token buckets for CUDA graphs of the Raon-1 mini MLP-side
+    # mHC segment in mixed steps. Empty keeps the eager path.
+    "VLLM_RAON_MLP_SEGMENT_GRAPH_BUCKETS": lambda: os.environ.get(
+        "VLLM_RAON_MLP_SEGMENT_GRAPH_BUCKETS", ""
+    ),
+    # Capture the Raon-1 mini MLP-side mHC segment graphs during server start
+    # instead of on first use. Requires the bucket list.
+    "VLLM_RAON_MLP_SEGMENT_GRAPH_PRECAPTURE": lambda: (
+        os.environ.get("VLLM_RAON_MLP_SEGMENT_GRAPH_PRECAPTURE", "0") == "1"
     ),
     # Fuse compatible single-token NVFP4 Marlin routing and expert alignment.
     "VLLM_MARLIN_SINGLE_ROW_ROUTING": lambda: (

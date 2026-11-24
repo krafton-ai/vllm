@@ -68,7 +68,7 @@ from .mla_align import install_mla_output_gate_two_round
 from .mla_proj_align import apply_module as apply_mla_proj_persistent
 from .mhc import _AGGNORM_FUSED_ENV as _MHC_AGGNORM_FUSED_ENV
 from .mhc import RaonMHC
-from . import effort_steering, raon_phase
+from . import effort_steering, mlp_segment_graph, raon_phase
 from .mlp_align import apply_module as apply_dense_mlp_persistent
 from .mlp_align import apply_situ_native as apply_dense_mlp_situ_native
 from .moe_align import _combine_ep_partial_fp32_loop as moe_combine_ep_partial_loop
@@ -1574,6 +1574,12 @@ class RaonDecoderLayer(nn.Module):
         n = config.raon_mhc_streams
         self.self_attn_raon_mhc = RaonMHC(n, config.hidden_size, 2 * layer_idx)
         self.mlp_raon_mhc = RaonMHC(n, config.hidden_size, 2 * layer_idx + 1)
+        # Segment graphs are used on a single GPU only.
+        self._mlp_segment_graph_world = (
+            vllm_config.parallel_config.world_size == 1
+            and vllm_config.parallel_config.data_parallel_size == 1
+            and not vllm_config.parallel_config.enable_eplb
+        )
 
     def forward(self, positions: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
         """s: [T, streams, hidden] in, same out."""
@@ -1614,7 +1620,14 @@ class RaonDecoderLayer(nn.Module):
                 hidden_states=self.input_layernorm(a), positions=positions
             ),
         )
-        return self.mlp_raon_mhc(s, lambda a: self._mlp_out(self.post_attention_layernorm(a)))
+
+        def mlp_branch(a: torch.Tensor) -> torch.Tensor:
+            return self._mlp_out(self.post_attention_layernorm(a))
+
+        out = mlp_segment_graph.try_run(self, s, mlp_branch)
+        if out is not None:
+            return out
+        return self.mlp_raon_mhc(s, mlp_branch)
 
     def _mlp_out(self, a: torch.Tensor) -> torch.Tensor:
         """The MLP branch; a steered MoE layer adds its per-token reasoning-effort vector (effort_steering.py)."""
@@ -1982,6 +1995,10 @@ class Raon1MiniForCausalLM(nn.Module, SupportsEagle3, HasInnerState, IsHybrid):
         re.compile(r"(\.moe\.experts\.\d+\.)down_proj(?=\.|$)"): r"\1w2",
         re.compile(r"(?<=\.)moe(?=\.|$)"): "block_sparse_moe",
     })
+
+    def precapture_graphs(self, runner) -> int:
+        """Capture the MLP-side mHC segment graphs; returns the bytes held."""
+        return mlp_segment_graph.precapture(runner)
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
         super().__init__()

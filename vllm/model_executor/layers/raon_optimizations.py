@@ -41,6 +41,8 @@ _DEVICES: dict[str, tuple[tuple[int, int], ...] | None] = {
     "raon_lm_head_bf16": ((10, 3),),
     "raon_kda_split_decode_suffix": ((10, 3),),
     "raon_moe_dequant_bf16": ((10, 3),),
+    "mlp_segment_graph": ((10, 3),),
+    "mlp_segment_graph_precapture": ((10, 3),),
 }
 
 # Optimizations that keep extra resident weights, workspaces or graph pools.
@@ -50,11 +52,14 @@ _ADDS_MEMORY = frozenset(
         "marlin_resident_bf16",
         "raon_lm_head_bf16",
         "raon_moe_dequant_bf16",
+        "mlp_segment_graph",
+        "mlp_segment_graph_precapture",
     }
 )
 
 LM_HEAD_BF16_MIN_ROWS = 33
 MOE_DEQUANT_BF16_MIN_TOKENS = 4096
+MLP_SEGMENT_GRAPH_BUCKETS = (1280, 2304, 3328)
 
 
 def _for_device(table: dict[tuple[int, int], _T], device_id: int) -> _T | None:

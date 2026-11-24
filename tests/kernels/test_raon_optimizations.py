@@ -89,6 +89,8 @@ def test_off_selects_nothing(monkeypatch, capability, mode):
                 "raon_lm_head_bf16",
                 "raon_kda_split_decode_suffix",
                 "raon_moe_dequant_bf16",
+                "mlp_segment_graph",
+                "mlp_segment_graph_precapture",
             },
         ),
         (

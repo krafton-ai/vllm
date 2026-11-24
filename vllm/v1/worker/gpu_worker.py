@@ -731,6 +731,14 @@ class Worker(WorkerBase):
         if not self.model_config.enforce_eager:
             cuda_graph_memory_bytes = self.model_runner.capture_model()
 
+        # Models with their own graphs capture them here, after the regular
+        # capture has sized the shared workspaces.
+        model_graph_memory_bytes = 0
+        model = getattr(self.model_runner, "get_model", lambda: None)()
+        precapture = getattr(model, "precapture_graphs", None)
+        if precapture is not None:
+            model_graph_memory_bytes = precapture(self.model_runner)
+
         # Compare actual vs estimated CUDA graph memory (if we did profiling)
         if (
             hasattr(self, "cudagraph_memory_estimate")
@@ -746,6 +754,10 @@ class Worker(WorkerBase):
                 GiB(diff),
                 100 * diff / max(cuda_graph_memory_bytes, 1),
             )
+
+        # The model's own graphs sit beside the regular graph pool in the
+        # non-KV-cache memory reported below.
+        cuda_graph_memory_bytes += model_graph_memory_bytes
 
         if self.cache_config.kv_cache_memory_bytes is None and hasattr(
             self, "peak_activation_memory"
