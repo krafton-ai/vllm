@@ -21,6 +21,30 @@ from .base import NvFp4LinearKernel, NvFp4LinearLayerConfig
 logger = init_logger(__name__)
 
 
+def _raon_dequant_min_rows(layer: torch.nn.Module) -> int:
+    """Rows threshold for the per-call BF16 dequant path (0 = off)."""
+    min_rows = envs.VLLM_MARLIN_DEQUANT_BF16_MIN_ROWS
+    if min_rows < 0:
+        raise ValueError("VLLM_MARLIN_DEQUANT_BF16_MIN_ROWS must be non-negative")
+    weight = cast(torch.Tensor, layer.weight)
+    if (
+        min_rows == 0
+        and weight.is_cuda
+        and raon_optimizations.enabled("marlin_dequant_bf16", weight.device.index)
+    ):
+        min_rows = (
+            raon_optimizations.dequant_bf16_min_rows(
+                cast(int, layer.input_size_per_partition),
+                cast(int, layer.output_size_per_partition),
+                weight.device.index,
+            )
+            or 0
+        )
+    if min_rows == 0 or getattr(layer, "weight_global_scale", None) is None:
+        return 0
+    return _raon_eligible(layer, min_rows)
+
+
 def _raon_resident_min_rows(layer: torch.nn.Module) -> int:
     min_rows = envs.VLLM_MARLIN_RESIDENT_BF16_MIN_ROWS
     if min_rows < 0:
@@ -32,6 +56,11 @@ def _raon_resident_min_rows(layer: torch.nn.Module) -> int:
         and raon_optimizations.enabled("marlin_resident_bf16", weight.device.index)
     ):
         min_rows = raon_optimizations.resident_bf16_min_rows(weight.device.index) or 0
+    return _raon_eligible(layer, min_rows)
+
+
+def _raon_eligible(layer: torch.nn.Module, min_rows: int) -> int:
+    weight = cast(torch.Tensor, layer.weight)
     if min_rows == 0 or not weight.is_cuda or getattr(layer, "bias", None) is not None:
         return 0
 
@@ -55,6 +84,27 @@ def _raon_resident_min_rows(layer: torch.nn.Module) -> int:
     ):
         return 0
     return min_rows
+
+
+# One scratch buffer per (device, group), shared by every layer of the group
+# on the dequant path: those layers run one after another on the same stream,
+# so the largest dense weight bounds the extra memory. It is sized while
+# weights are processed, before graph capture and KV sizing. Shared-expert
+# layers may run on a side stream concurrently with main-stream layers, so
+# they get their own buffer.
+_DEQUANT_SCRATCH: dict[tuple[torch.device, int], torch.Tensor] = {}
+
+
+def _dequant_group(layer: torch.nn.Module) -> int:
+    return 1 if "shared_expert" in getattr(layer, "prefix", "") else 0
+
+
+def _reserve_dequant_scratch(device: torch.device, group: int, numel: int) -> None:
+    cur = _DEQUANT_SCRATCH.get((device, group))
+    if cur is None or cur.numel() < numel:
+        _DEQUANT_SCRATCH[(device, group)] = torch.empty(
+            numel, dtype=torch.bfloat16, device=device
+        )
 
 
 class MarlinNvFp4LinearKernel(NvFp4LinearKernel):
@@ -83,11 +133,39 @@ class MarlinNvFp4LinearKernel(NvFp4LinearKernel):
         min_rows = _raon_resident_min_rows(layer)
         if min_rows:
             # Build before graph capture and account for the permanent copy
-            # before the engine sizes the KV cache.
+            # before the engine sizes the KV cache. The resident copy takes
+            # precedence over the per-call dequant path when both are on.
             cast(Any, layer)._raon_resident_min_rows = min_rows
             layer.register_buffer(
                 "_raon_resident_bf16", self._materialize_bf16(layer), persistent=False
             )
+            return
+        dq_rows = _raon_dequant_min_rows(layer)
+        if dq_rows:
+            # Exact BF16 values of the Marlin weight, produced into a shared
+            # scratch buffer at call time instead of a permanent copy.
+            from vllm.model_executor.layers.quantization.utils import (
+                raon_nvfp4_dequant,
+            )
+
+            raon_nvfp4_dequant.prepare(layer)
+            raon_layer = cast(Any, layer)
+            raon_layer._raon_dequant_min_rows = dq_rows
+            raon_layer._raon_dequant_group = _dequant_group(layer)
+            logger.info_once(
+                "Raon NVFP4 dense layers use the per-call BF16 dequant path "
+                "for >= %d rows (%dx%d)",
+                dq_rows,
+                raon_layer.input_size_per_partition,
+                raon_layer.output_size_per_partition,
+            )
+            _reserve_dequant_scratch(
+                raon_layer.weight.device,
+                raon_layer._raon_dequant_group,
+                raon_layer.input_size_per_partition
+                * raon_layer.output_size_per_partition,
+            )
+            return
 
     @torch.no_grad()
     def _materialize_bf16(self, layer: torch.nn.Module) -> torch.Tensor:
@@ -109,6 +187,24 @@ class MarlinNvFp4LinearKernel(NvFp4LinearKernel):
         x: torch.Tensor,
         bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        dq_rows = getattr(layer, "_raon_dequant_min_rows", 0)
+        if dq_rows and bias is None and x.dtype == torch.bfloat16:
+            rows = x.numel() // x.shape[-1]
+            if rows >= dq_rows:
+                from vllm.model_executor.layers.quantization.utils import (
+                    raon_nvfp4_dequant,
+                )
+
+                raon_layer = cast(Any, layer)
+                k: int = raon_layer.input_size_per_partition
+                n: int = raon_layer.output_size_per_partition
+                scratch = _DEQUANT_SCRATCH[
+                    (raon_layer.weight.device, raon_layer._raon_dequant_group)
+                ]
+                weight = scratch[: k * n].view(k, n)
+                raon_nvfp4_dequant.dequantize_into(layer, weight)
+                out = torch.matmul(x.reshape(rows, k), weight)
+                return out.reshape(x.shape[:-1] + (n,))
         resident = getattr(layer, "_raon_resident_bf16", None)
         if resident is not None and bias is None and x.dtype == resident.dtype:
             rows = x.numel() // x.shape[-1]

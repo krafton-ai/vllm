@@ -31,10 +31,27 @@ _T = TypeVar("_T")
 # keeps Marlin. Jetson Thor gains from the BF16 copy from smaller batches on.
 _RESIDENT_BF16_MIN_ROWS: dict[tuple[int, int], int] = {(10, 3): 512, (11, 0): 256}
 
+# Ordered (min weight elements, max K or None, rows) rules per compute
+# capability for the per-call BF16 dequant path; the first matching rule wins.
+# The path is selected on exactly these devices.
+_DequantRule = tuple[int, int | None, int]
+_DEQUANT_BF16_MIN_ROWS: dict[tuple[int, int], tuple[_DequantRule, ...]] = {
+    (10, 3): (
+        (20_000_000, None, 160),
+        (10_000_000, None, 96),
+        (5_000_000, None, 64),
+        (4_000_000, None, 32),
+        (0, 256, 96),
+        (0, None, 1),
+    ),
+    (11, 0): ((0, None, 512),),
+}
+
 # Compute capabilities per optimization; None means every CUDA device.
 _DEVICES: dict[str, tuple[tuple[int, int], ...] | None] = {
     "marlin_single_row_routing": None,
     "marlin_resident_bf16": tuple(_RESIDENT_BF16_MIN_ROWS),
+    "marlin_dequant_bf16": tuple(_DEQUANT_BF16_MIN_ROWS),
     "mhc_split_k": ((8, 9),),
     "mhc_single_row": ((8, 9), (11, 0)),
     "kda_state_bf16": ((11, 0),),
@@ -74,6 +91,26 @@ def _for_device(table: dict[tuple[int, int], _T], device_id: int) -> _T | None:
 def resident_bf16_min_rows(device_id: int = 0) -> int | None:
     """Default row threshold of the resident BF16 copy, or None off the table."""
     return _for_device(_RESIDENT_BF16_MIN_ROWS, device_id)
+
+
+def dequant_bf16_min_rows(size_k: int, size_n: int, device_id: int = 0) -> int | None:
+    """Rows from which the per-call BF16 dequant path beats Marlin, or None
+    off the table.
+
+    On SM103 the threshold depends on the Raon-1 mini dense weight size:
+    large weights need more rows to amortize the dequant pass and to avoid
+    Marlin's uneven row counts. Small weights win from one row, except a
+    very short K, where Marlin's own pass is already cheap. Jetson Thor has
+    less memory bandwidth, so the dequant pass pays off only from
+    prefill-sized batches there."""
+    rules = _for_device(_DEQUANT_BF16_MIN_ROWS, device_id)
+    if rules is None:
+        return None
+    weight = size_k * size_n
+    for min_weight, max_k, rows in rules:
+        if weight >= min_weight and (max_k is None or size_k <= max_k):
+            return rows
+    return None
 
 
 @functools.cache

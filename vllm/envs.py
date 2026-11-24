@@ -193,6 +193,7 @@ if TYPE_CHECKING:
     VLLM_MARLIN_SINGLE_ROW_ROUTING: bool = False
     VLLM_MARLIN_REUSE_SINGLE_ROW_SCRATCH: bool = False
     VLLM_MARLIN_RESIDENT_BF16_MIN_ROWS: int = 0
+    VLLM_MARLIN_DEQUANT_BF16_MIN_ROWS: int = 0
     VLLM_RAON_LM_HEAD_BF16_MIN_ROWS: int = 0
     VLLM_RAON_MOE_DEQUANT_BF16_MIN_TOKENS: int = 0
     VLLM_MARLIN_INPUT_DTYPE: Literal["int8", "fp8"] | None = None
@@ -1567,6 +1568,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Zero keeps the weight-only Marlin path for all batch sizes.
     "VLLM_MARLIN_RESIDENT_BF16_MIN_ROWS": lambda: int(
         os.environ.get("VLLM_MARLIN_RESIDENT_BF16_MIN_ROWS", "0")
+    ),
+    # Minimum batch rows for dequantizing eligible NVFP4 linears into a shared
+    # BF16 scratch buffer on each call (no resident copy). Zero defers to the
+    # Raon device switch; it is exclusive with the resident BF16 copy.
+    "VLLM_MARLIN_DEQUANT_BF16_MIN_ROWS": lambda: int(
+        os.environ.get("VLLM_MARLIN_DEQUANT_BF16_MIN_ROWS", "0")
     ),
     # Minimum batch rows for using a resident BF16 copy of the MXFP8 Marlin LM
     # head. Zero keeps the weight-only Marlin path for all batch sizes.

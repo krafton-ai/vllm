@@ -79,12 +79,14 @@ def test_off_selects_nothing(monkeypatch, capability, mode):
             (10, 3),
             {
                 "marlin_single_row_routing",
+                "marlin_dequant_bf16",
                 "marlin_reuse_single_row_scratch",
                 "raon_kda_split_decode_suffix",
             },
             {
                 "marlin_single_row_routing",
                 "marlin_resident_bf16",
+                "marlin_dequant_bf16",
                 "marlin_reuse_single_row_scratch",
                 "raon_lm_head_bf16",
                 "raon_kda_split_decode_suffix",
@@ -95,10 +97,16 @@ def test_off_selects_nothing(monkeypatch, capability, mode):
         ),
         (
             (11, 0),
-            {"marlin_single_row_routing", "mhc_single_row", "kda_state_bf16"},
+            {
+                "marlin_single_row_routing",
+                "marlin_dequant_bf16",
+                "mhc_single_row",
+                "kda_state_bf16",
+            },
             {
                 "marlin_single_row_routing",
                 "marlin_resident_bf16",
+                "marlin_dequant_bf16",
                 "mhc_single_row",
                 "kda_state_bf16",
             },
@@ -211,4 +219,67 @@ def test_resident_threshold_off_table(monkeypatch, capability):
 def test_resident_devices_follow_table():
     devices = raon_optimizations._DEVICES["marlin_resident_bf16"]
     assert devices == tuple(raon_optimizations._RESIDENT_BF16_MIN_ROWS)
+    assert devices == ((10, 3), (11, 0))
+
+
+def test_dequant_threshold_per_device(monkeypatch):
+    _select_device(monkeypatch, (11, 0))
+    assert raon_optimizations.dequant_bf16_min_rows(2560, 40) == 512
+    _select_device(monkeypatch, (10, 3))
+    assert raon_optimizations.dequant_bf16_min_rows(2560, 20656) == 160
+    assert raon_optimizations.dequant_bf16_min_rows(2560, 40) == 1
+
+
+def _previous_sm103_dequant_bf16_min_rows(size_k, size_n):
+    # Reference copy of the SM103 rules before they became a device table.
+    weight = size_k * size_n
+    if weight >= 20_000_000:
+        return 160
+    if weight >= 10_000_000:
+        return 96
+    if weight >= 5_000_000:
+        return 64
+    if weight >= 4_000_000:
+        return 32
+    if size_k <= 256:
+        return 96
+    return 1
+
+
+def _dequant_shapes():
+    ks = (16, 64, 128, 256, 272, 512, 576, 1088, 2560, 5120, 12032)
+    ns = (40, 1152, 2176, 2560, 5120, 7680, 20656, 24064)
+    shapes = {(k, n) for k in ks for n in ns}
+    # Products just below, at and just above each weight boundary, with
+    # K both within and beyond the short-K rule.
+    for boundary in (4_000_000, 5_000_000, 10_000_000, 20_000_000):
+        for k in (128, 200, 250, 256, 257, 272, 400, 500, 2560):
+            low = boundary // k
+            shapes.update((k, n) for n in (low - 1, low, low + 1, -(-boundary // k)))
+    return sorted(shapes)
+
+
+def test_dequant_rules_match_previous_sm103_thresholds(monkeypatch):
+    _select_device(monkeypatch, (10, 3))
+    for k, n in _dequant_shapes():
+        expected = _previous_sm103_dequant_bf16_min_rows(k, n)
+        assert raon_optimizations.dequant_bf16_min_rows(k, n) == expected, (k, n)
+
+
+def test_dequant_threshold_thor_everywhere(monkeypatch):
+    _select_device(monkeypatch, (11, 0))
+    for k, n in _dequant_shapes():
+        assert raon_optimizations.dequant_bf16_min_rows(k, n) == 512, (k, n)
+
+
+@pytest.mark.parametrize("capability", [(8, 9), (9, 0), (12, 0)])
+def test_dequant_threshold_off_table(monkeypatch, capability):
+    _select_device(monkeypatch, capability)
+    assert raon_optimizations.dequant_bf16_min_rows(2560, 40) is None
+    assert raon_optimizations.dequant_bf16_min_rows(2560, 20656) is None
+
+
+def test_dequant_devices_follow_table():
+    devices = raon_optimizations._DEVICES["marlin_dequant_bf16"]
+    assert devices == tuple(raon_optimizations._DEQUANT_BF16_MIN_ROWS)
     assert devices == ((10, 3), (11, 0))
