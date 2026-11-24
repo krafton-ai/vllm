@@ -186,6 +186,7 @@ if TYPE_CHECKING:
     VLLM_RAON_OPTIMIZATIONS: str = "1"
     VLLM_RAON_OPTIMIZATIONS_EXCLUDE: str = ""
     VLLM_MARLIN_SINGLE_ROW_ROUTING: bool = False
+    VLLM_MARLIN_RESIDENT_BF16_MIN_ROWS: int = 0
     VLLM_MARLIN_INPUT_DTYPE: Literal["int8", "fp8"] | None = None
     VLLM_HUMMING_ONLINE_QUANT_CONFIG: dict[str, Any] | None = None
     VLLM_HUMMING_INPUT_QUANT_CONFIG: dict[str, Any] | None = None
@@ -1527,6 +1528,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Fuse compatible single-token NVFP4 Marlin routing and expert alignment.
     "VLLM_MARLIN_SINGLE_ROW_ROUTING": lambda: (
         os.environ.get("VLLM_MARLIN_SINGLE_ROW_ROUTING", "0") == "1"
+    ),
+    # Minimum batch rows for retaining BF16 copies of eligible NVFP4 linears.
+    # Zero keeps the weight-only Marlin path for all batch sizes.
+    "VLLM_MARLIN_RESIDENT_BF16_MIN_ROWS": lambda: int(
+        os.environ.get("VLLM_MARLIN_RESIDENT_BF16_MIN_ROWS", "0")
     ),
     # The activation dtype for marlin kernel
     "VLLM_MARLIN_INPUT_DTYPE": env_with_choices(

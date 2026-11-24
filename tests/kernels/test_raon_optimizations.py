@@ -78,12 +78,12 @@ def test_off_selects_nothing(monkeypatch, capability, mode):
         (
             (10, 3),
             {"marlin_single_row_routing"},
-            {"marlin_single_row_routing"},
+            {"marlin_single_row_routing", "marlin_resident_bf16"},
         ),
         (
             (11, 0),
             {"marlin_single_row_routing"},
-            {"marlin_single_row_routing"},
+            {"marlin_single_row_routing", "marlin_resident_bf16"},
         ),
         (
             (9, 0),
@@ -167,3 +167,22 @@ def test_unknown_mode_rejected(monkeypatch, fake_table):
     monkeypatch.setattr(raon_optimizations.current_platform, "is_cuda", lambda: True)
     with pytest.raises(ValueError):
         raon_optimizations.enabled("opt_a")
+
+
+def test_resident_threshold_per_device(monkeypatch):
+    _select_device(monkeypatch, (10, 3))
+    assert raon_optimizations.resident_bf16_min_rows() == 512
+    _select_device(monkeypatch, (11, 0))
+    assert raon_optimizations.resident_bf16_min_rows() == 256
+
+
+@pytest.mark.parametrize("capability", [(8, 9), (9, 0), (12, 0)])
+def test_resident_threshold_off_table(monkeypatch, capability):
+    _select_device(monkeypatch, capability)
+    assert raon_optimizations.resident_bf16_min_rows() is None
+
+
+def test_resident_devices_follow_table():
+    devices = raon_optimizations._DEVICES["marlin_resident_bf16"]
+    assert devices == tuple(raon_optimizations._RESIDENT_BF16_MIN_ROWS)
+    assert devices == ((10, 3), (11, 0))

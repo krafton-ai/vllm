@@ -11,6 +11,8 @@ import pytest
 import torch
 
 from vllm import _custom_ops as ops
+from vllm.model_executor.kernels.linear.nvfp4.base import NvFp4LinearLayerConfig
+from vllm.model_executor.kernels.linear.nvfp4.marlin import MarlinNvFp4LinearKernel
 from vllm.model_executor.layers.quantization.utils.marlin_utils import (
     GPTQ_MARLIN_TILE,
     apply_gptq_marlin_linear,
@@ -296,6 +298,53 @@ def test_nvfp4_marlin_padded_round_trip(shape):
 
     assert output.shape == (8, size_n)
     torch.testing.assert_close(output, ref, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.skipif(
+    _gpu_marlin_unsupported() or not is_fp4_marlin_supported(),
+    reason="FP4 Marlin is not supported on this GPU type.",
+)
+def test_raon_resident_nvfp4_marlin_keeps_small_batch_fallback(monkeypatch):
+    size_n, size_k = 200, 2064
+    layer = torch.nn.Module()
+    layer.output_size_per_partition = size_n
+    layer.input_size_per_partition = size_k
+    layer.params_dtype = torch.bfloat16
+    layer.weight = torch.nn.Parameter(
+        torch.randint(0, 256, (size_n, size_k // 2), dtype=torch.uint8, device="cuda"),
+        requires_grad=False,
+    )
+    layer.weight_scale = torch.nn.Parameter(
+        torch.ones((size_n, size_k // 16), device="cuda").to(torch.float8_e4m3fn),
+        requires_grad=False,
+    )
+    layer.weight_global_scale = torch.nn.Parameter(
+        torch.tensor([0.002], dtype=torch.float32, device="cuda"),
+        requires_grad=False,
+    )
+    backend = MarlinNvFp4LinearKernel(NvFp4LinearLayerConfig())
+    monkeypatch.setattr(
+        "vllm.model_executor.kernels.linear.nvfp4.marlin._raon_resident_min_rows",
+        lambda _: 2,
+    )
+    backend.process_weights_after_loading(layer)
+
+    x = torch.zeros((1, 4, size_k), dtype=torch.bfloat16, device="cuda")
+    x[0, :, -1] = 1
+    small_batch = x[:, :1]
+    torch.testing.assert_close(
+        backend.apply_weights(layer, small_batch),
+        backend._apply_marlin(layer, small_batch, None),
+        rtol=0,
+        atol=0,
+    )
+    torch.testing.assert_close(
+        backend.apply_weights(layer, x),
+        backend._apply_marlin(layer, x, None),
+        rtol=0,
+        atol=0,
+    )
+    assert "_raon_resident_bf16" not in layer.state_dict()
 
 
 @pytest.mark.skipif(

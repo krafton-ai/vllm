@@ -16,6 +16,7 @@ its optimization on every CUDA device.
 """
 
 import functools
+from typing import TypeVar
 
 from vllm import envs
 from vllm.logger import init_logger
@@ -23,14 +24,35 @@ from vllm.platforms import current_platform
 
 logger = init_logger(__name__)
 
+_T = TypeVar("_T")
+
+# Default row threshold of the resident BF16 copy per compute capability. The
+# copy is selected on exactly these devices, so a GPU without a threshold here
+# keeps Marlin. Jetson Thor gains from the BF16 copy from smaller batches on.
+_RESIDENT_BF16_MIN_ROWS: dict[tuple[int, int], int] = {(10, 3): 512, (11, 0): 256}
+
 # Compute capabilities per optimization; None means every CUDA device.
 _DEVICES: dict[str, tuple[tuple[int, int], ...] | None] = {
     "marlin_single_row_routing": None,
+    "marlin_resident_bf16": tuple(_RESIDENT_BF16_MIN_ROWS),
 }
 
 # Optimizations that keep extra resident weights, workspaces or graph pools.
 # Only VLLM_RAON_OPTIMIZATIONS=full selects them.
-_ADDS_MEMORY: frozenset[str] = frozenset()
+_ADDS_MEMORY = frozenset({"marlin_resident_bf16"})
+
+
+def _for_device(table: dict[tuple[int, int], _T], device_id: int) -> _T | None:
+    """The value of the first capability in ``table`` that matches the device."""
+    for capability, value in table.items():
+        if current_platform.is_device_capability(capability, device_id=device_id):
+            return value
+    return None
+
+
+def resident_bf16_min_rows(device_id: int = 0) -> int | None:
+    """Default row threshold of the resident BF16 copy, or None off the table."""
+    return _for_device(_RESIDENT_BF16_MIN_ROWS, device_id)
 
 
 @functools.cache
