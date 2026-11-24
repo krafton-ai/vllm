@@ -4,6 +4,7 @@
 
 import math
 from collections.abc import Callable
+from typing import cast
 
 import torch
 
@@ -11,7 +12,10 @@ import vllm._custom_ops as ops
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
 from vllm import envs
 from vllm.model_executor.layers import raon_optimizations
-from vllm.model_executor.layers.fused_moe import marlin_single_row_route
+from vllm.model_executor.layers.fused_moe import (
+    marlin_bf16_dequant,
+    marlin_single_row_route,
+)
 from vllm.model_executor.layers.fused_moe.activation import (
     ApplyMoEActivationConfig,
     MoEActivation,
@@ -799,6 +803,57 @@ class MarlinExperts(LoRAExpertsMixin, MarlinExpertsBase):
 
         ctx = self._lora_context
         if ctx is None:
+            if (
+                marlin_bf16_dequant.MIN_TOKENS
+                and hidden_states.shape[0] >= marlin_bf16_dequant.MIN_TOKENS
+                and self.quant_config.use_nvfp4_w4a16
+                and activation == MoEActivation.SITU
+                and marlin_bf16_dequant.run(
+                    output=output,
+                    hidden_states=hidden_states,
+                    w1=w1,
+                    w2=w2,
+                    w1_scale=self.w1_scale,
+                    w2_scale=self.w2_scale,
+                    global_scale1=self.g1_alphas,
+                    global_scale2=self.g2_alphas,
+                    topk_weights=topk_weights,
+                    topk_ids=topk_ids,
+                    expert_map=expert_map,
+                    bias1=self.w1_bias,
+                    bias2=self.w2_bias,
+                    apply_router_weight_on_input=apply_router_weight_on_input,
+                    activation_config=self.activation_config,
+                    input_dtype=self.input_dtype,
+                    reference=lambda x, weights, ids: fused_marlin_moe(
+                        hidden_states=x,
+                        w1=w1,
+                        w2=w2,
+                        bias1=None,
+                        bias2=None,
+                        w1_scale=cast(torch.Tensor, self.w1_scale),
+                        w2_scale=cast(torch.Tensor, self.w2_scale),
+                        topk_weights=weights,
+                        topk_ids=ids,
+                        global_scale1=self.g1_alphas,
+                        global_scale2=self.g2_alphas,
+                        input_global_scale1=self.a1_gscale,
+                        input_global_scale2=self.a2_gscale,
+                        quant_type_id=self.quant_type_id,
+                        global_num_experts=global_num_experts,
+                        activation=activation,
+                        activation_func=self.activation,
+                        activation_config=self.activation_config,
+                        g_idx1=self.w13_g_idx,
+                        g_idx2=self.w2_g_idx,
+                        sort_indices1=self.w13_g_idx_sort_indices,
+                        sort_indices2=self.w2_g_idx_sort_indices,
+                        is_k_full=self.is_k_full,
+                        input_dtype=self.input_dtype,
+                    ),
+                )
+            ):
+                return
             fused_marlin_moe(
                 hidden_states=hidden_states,
                 w1=w1,

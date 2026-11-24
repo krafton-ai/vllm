@@ -40,6 +40,7 @@ _DEVICES: dict[str, tuple[tuple[int, int], ...] | None] = {
     "marlin_reuse_single_row_scratch": ((10, 3),),
     "raon_lm_head_bf16": ((10, 3),),
     "raon_kda_split_decode_suffix": ((10, 3),),
+    "raon_moe_dequant_bf16": ((10, 3),),
 }
 
 # Optimizations that keep extra resident weights, workspaces or graph pools.
@@ -48,10 +49,12 @@ _ADDS_MEMORY = frozenset(
     {
         "marlin_resident_bf16",
         "raon_lm_head_bf16",
+        "raon_moe_dequant_bf16",
     }
 )
 
 LM_HEAD_BF16_MIN_ROWS = 33
+MOE_DEQUANT_BF16_MIN_TOKENS = 4096
 
 
 def _for_device(table: dict[tuple[int, int], _T], device_id: int) -> _T | None:

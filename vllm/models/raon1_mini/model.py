@@ -2147,6 +2147,9 @@ class Raon1MiniForCausalLM(nn.Module, SupportsEagle3, HasInnerState, IsHybrid):
         self._fp32_head_weight_cache.clear()
         from .moe_grouped import clear
         clear()
+        from vllm.model_executor.layers.fused_moe import marlin_bf16_dequant
+
+        marlin_bf16_dequant.clear()
         # Transport-independent derived-cache invalidation. The refit paths
         # OUTSIDE the collective transport (ipc_zmq /
         # striped / vllm_zmq_sparse -- the transport production.yaml declares)

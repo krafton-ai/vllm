@@ -191,6 +191,7 @@ if TYPE_CHECKING:
     VLLM_MARLIN_REUSE_SINGLE_ROW_SCRATCH: bool = False
     VLLM_MARLIN_RESIDENT_BF16_MIN_ROWS: int = 0
     VLLM_RAON_LM_HEAD_BF16_MIN_ROWS: int = 0
+    VLLM_RAON_MOE_DEQUANT_BF16_MIN_TOKENS: int = 0
     VLLM_MARLIN_INPUT_DTYPE: Literal["int8", "fp8"] | None = None
     VLLM_HUMMING_ONLINE_QUANT_CONFIG: dict[str, Any] | None = None
     VLLM_HUMMING_INPUT_QUANT_CONFIG: dict[str, Any] | None = None
@@ -1553,6 +1554,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # head. Zero keeps the weight-only Marlin path for all batch sizes.
     "VLLM_RAON_LM_HEAD_BF16_MIN_ROWS": lambda: int(
         os.environ.get("VLLM_RAON_LM_HEAD_BF16_MIN_ROWS", "0")
+    ),
+    # Minimum token count at which Raon NVFP4 Marlin MoE layers dequantize
+    # their experts to BF16 workspace slots and use BF16 grouped GEMMs.
+    # 0 disables the path.
+    "VLLM_RAON_MOE_DEQUANT_BF16_MIN_TOKENS": lambda: int(
+        os.environ.get("VLLM_RAON_MOE_DEQUANT_BF16_MIN_TOKENS", "0")
     ),
     # The activation dtype for marlin kernel
     "VLLM_MARLIN_INPUT_DTYPE": env_with_choices(
