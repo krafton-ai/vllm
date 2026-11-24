@@ -79,9 +79,9 @@ def use_bf16_state(num_spec: int = 0) -> bool:
             raise ValueError(
                 f"VLLM_RAON_KDA_STATE_BF16=1 cannot take effect: {problem}."
             )
-        logger.info("Raon KDA BF16 state not used, keeping FP32: %s.", problem)
+        logger.info("Raon Delta Attention BF16 state not used, keeping FP32: %s.", problem)
         return False
-    logger.info("Raon KDA recurrent state is stored in BF16.")
+    logger.info("Raon Delta Attention recurrent state is stored in BF16.")
     return True
 
 

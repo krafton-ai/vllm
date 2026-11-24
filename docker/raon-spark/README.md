@@ -68,7 +68,7 @@ when only local access is needed.
 
 ## Spark compatibility
 
-SM 12.x uses Triton MLA and FlashAttention prefill. The KDA vector-split
+SM 12.x uses Triton MLA and FlashAttention prefill. The Raon Delta Attention (RDA) vector-split
 extension compiles for SM 12.1, and its required CUDA sources are included in
 the Python wheel. JIT compilation uses CUDA's runtime headers before the
 pip-distributed cuBLAS/cuSPARSE headers through `CPLUS_INCLUDE_PATH`.

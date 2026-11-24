@@ -311,7 +311,7 @@ def _resolve_phase(ctx) -> bool:
     adapted = [m for m in _iter_metadata(ctx.attn_metadata)
                if m is not None and hasattr(m, "_raon_true_prefills")]
     if not adapted:
-        raise RuntimeError("RAON_PREFILL_ALIGNED missing true-prefill KDA metadata adapter")
+        raise RuntimeError("RAON_PREFILL_ALIGNED missing true-prefill RDA metadata adapter")
     phase_counts = {
         (m._raon_true_prefills, m._raon_active_requests)
         for m in adapted if m._raon_active_requests > 0

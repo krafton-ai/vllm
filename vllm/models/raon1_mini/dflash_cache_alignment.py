@@ -184,7 +184,7 @@ def align_draft_window(spec, config):
         or cache.mamba_cache_mode != "align"
         or cache.mamba_block_size != cache.block_size
     ):
-        raise ValueError("Raon APC draft window requires the aligned MLA/KDA page")
+        raise ValueError("Raon APC draft window requires the aligned MLA/RDA page")
     bytes_per_token = spec.real_page_size_bytes // spec.block_size
     block = draft_block_size(cache.block_size, page, spec.block_size, bytes_per_token)
     return dataclasses.replace(spec, block_size=block, page_size_padded=page)
