@@ -188,6 +188,7 @@ if TYPE_CHECKING:
     VLLM_RAON_OPTIMIZATIONS: str = "1"
     VLLM_RAON_OPTIMIZATIONS_EXCLUDE: str = ""
     VLLM_MARLIN_SINGLE_ROW_ROUTING: bool = False
+    VLLM_MARLIN_REUSE_SINGLE_ROW_SCRATCH: bool = False
     VLLM_MARLIN_RESIDENT_BF16_MIN_ROWS: int = 0
     VLLM_MARLIN_INPUT_DTYPE: Literal["int8", "fp8"] | None = None
     VLLM_HUMMING_ONLINE_QUANT_CONFIG: dict[str, Any] | None = None
@@ -1536,6 +1537,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Fuse compatible single-token NVFP4 Marlin routing and expert alignment.
     "VLLM_MARLIN_SINGLE_ROW_ROUTING": lambda: (
         os.environ.get("VLLM_MARLIN_SINGLE_ROW_ROUTING", "0") == "1"
+    ),
+    # Reuse the Marlin MoE lock workspace across single-row decode calls
+    # instead of allocating it on every call.
+    "VLLM_MARLIN_REUSE_SINGLE_ROW_SCRATCH": lambda: (
+        os.environ.get("VLLM_MARLIN_REUSE_SINGLE_ROW_SCRATCH", "0") == "1"
     ),
     # Minimum batch rows for retaining BF16 copies of eligible NVFP4 linears.
     # Zero keeps the weight-only Marlin path for all batch sizes.

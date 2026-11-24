@@ -9,6 +9,8 @@ import torch
 
 import vllm._custom_ops as ops
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
+from vllm import envs
+from vllm.model_executor.layers import raon_optimizations
 from vllm.model_executor.layers.fused_moe import marlin_single_row_route
 from vllm.model_executor.layers.fused_moe.activation import (
     ApplyMoEActivationConfig,
@@ -56,6 +58,39 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
 from vllm.platforms import current_platform
 from vllm.scalar_type import ScalarType, scalar_types
 
+# Lifetime contract: with VLLM_MARLIN_REUSE_SINGLE_ROW_SCRATCH=1 (or the
+# VLLM_RAON_OPTIMIZATIONS profile on supported devices), single-row
+# calls share one small zeroed lock buffer per (device, stream, blocks); Marlin
+# resets the locks to zero before returning, so same-stream reuse is safe and
+# other streams or CUDA graph capture get their own buffer. The cache holds at
+# most _SCRATCH_MAX_ENTRIES buffers (sm_count * 4 int32 each) for the process
+# lifetime and never holds request data; beyond that, buffers are per call.
+_SCRATCH_MAX_ENTRIES = 8
+_scratch_cache: dict[tuple, torch.Tensor] = {}
+
+
+def _lock_workspace(device: torch.device, num_rows: int) -> torch.Tensor:
+    if num_rows != 1 or not (
+        envs.VLLM_MARLIN_REUSE_SINGLE_ROW_SCRATCH
+        or (
+            device.type == "cuda"
+            and raon_optimizations.enabled(
+                "marlin_reuse_single_row_scratch", device.index
+            )
+        )
+    ):
+        return marlin_make_workspace_new(device, 4)
+    stream = (
+        torch.cuda.current_stream(device).cuda_stream if device.type == "cuda" else 0
+    )
+    key = (device, stream, 4)
+    workspace = _scratch_cache.get(key)
+    if workspace is None:
+        workspace = marlin_make_workspace_new(device, 4)
+        if len(_scratch_cache) < _SCRATCH_MAX_ENTRIES:
+            _scratch_cache[key] = workspace
+    return workspace
+
 
 def _fused_marlin_moe(
     hidden_states: torch.Tensor,
@@ -100,7 +135,7 @@ def _fused_marlin_moe(
     N = marlin_moe_intermediate_size(w1, w2)
     w13_num_shards = 2 if activation.is_gated else 1
     if workspace is None:
-        workspace = marlin_make_workspace_new(hidden_states.device, 4)
+        workspace = _lock_workspace(hidden_states.device, M)
 
     if intermediate_cache13 is None:
         intermediate_cache13 = torch.empty(

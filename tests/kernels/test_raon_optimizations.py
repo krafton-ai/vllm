@@ -77,8 +77,12 @@ def test_off_selects_nothing(monkeypatch, capability, mode):
         ),
         (
             (10, 3),
-            {"marlin_single_row_routing"},
-            {"marlin_single_row_routing", "marlin_resident_bf16"},
+            {"marlin_single_row_routing", "marlin_reuse_single_row_scratch"},
+            {
+                "marlin_single_row_routing",
+                "marlin_resident_bf16",
+                "marlin_reuse_single_row_scratch",
+            },
         ),
         (
             (11, 0),
