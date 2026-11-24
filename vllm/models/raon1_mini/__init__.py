@@ -142,7 +142,18 @@ def apply_mxfp8_device_defaults() -> None:
         replace_default("RAON_SWAB_SMALL_GEMM_SHAPE_MAP", "")
 
 
+def _skip_default(key: str) -> bool:
+    """WSL's CUDA driver has no virtual memory management, so expandable
+    segments fail at the first KV cache allocation."""
+    if key != "PYTORCH_CUDA_ALLOC_CONF" or key in os.environ:
+        return False
+    from vllm.platforms.interface import in_wsl
+
+    return in_wsl()
+
+
 for _key, _value in {**PRODUCTION_ENV, **_build_dirs()}.items():
-    _set_default(_key, _value)
+    if not _skip_default(_key):
+        _set_default(_key, _value)
 del _key, _value
 apply_precision_profile(os.environ.get(PROFILE_KEY, "mxfp8"))

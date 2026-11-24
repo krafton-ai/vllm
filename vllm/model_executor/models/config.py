@@ -486,7 +486,13 @@ class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
 
         cls.check_gpu()
         scheduler_config = vllm_config.scheduler_config
+        from vllm.platforms.interface import in_wsl
+
         for key, value in cls.PROCESS_ENV.items():
+            # WSL's CUDA driver has no virtual memory management, so
+            # expandable segments fail at the first KV cache allocation.
+            if key == "PYTORCH_CUDA_ALLOC_CONF" and in_wsl():
+                continue
             os.environ.setdefault(key, value)
         # Overlap the shared experts with the routed ones for the whole batch.
         os.environ.setdefault(
