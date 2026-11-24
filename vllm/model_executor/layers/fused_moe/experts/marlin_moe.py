@@ -9,6 +9,7 @@ import torch
 
 import vllm._custom_ops as ops
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
+from vllm.model_executor.layers.fused_moe import marlin_single_row_route
 from vllm.model_executor.layers.fused_moe.activation import (
     ApplyMoEActivationConfig,
     MoEActivation,
@@ -337,13 +338,20 @@ def fused_marlin_moe(
     if input_dtype is not None and input_dtype.itemsize == 1:
         block_size_m = max(block_size_m, 16)
 
-    sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(
-        topk_ids,
-        block_size_m,
-        global_num_experts,
-        expert_map,
-        ignore_invalid_experts=True,
-    )
+    alignment = None
+    if marlin_single_row_route.ENABLED:
+        alignment = marlin_single_row_route.take_alignment(
+            topk_ids, block_size_m, global_num_experts, expert_map
+        )
+    if alignment is None:
+        alignment = moe_align_block_size(
+            topk_ids,
+            block_size_m,
+            global_num_experts,
+            expert_map,
+            ignore_invalid_experts=True,
+        )
+    sorted_token_ids, expert_ids, num_tokens_post_padded = alignment
 
     assert activation is not None
     moe_output = _fused_marlin_moe(

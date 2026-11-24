@@ -72,28 +72,28 @@ def test_off_selects_nothing(monkeypatch, capability, mode):
     [
         (
             (8, 9),
-            set(),
-            set(),
+            {"marlin_single_row_routing"},
+            {"marlin_single_row_routing"},
         ),
         (
             (10, 3),
-            set(),
-            set(),
+            {"marlin_single_row_routing"},
+            {"marlin_single_row_routing"},
         ),
         (
             (11, 0),
-            set(),
-            set(),
+            {"marlin_single_row_routing"},
+            {"marlin_single_row_routing"},
         ),
         (
             (9, 0),
-            set(),
-            set(),
+            {"marlin_single_row_routing"},
+            {"marlin_single_row_routing"},
         ),
         (
             (12, 0),
-            set(),
-            set(),
+            {"marlin_single_row_routing"},
+            {"marlin_single_row_routing"},
         ),
     ],
 )
@@ -105,6 +105,16 @@ def test_device_selection(monkeypatch, capability, default, full):
     raon_optimizations.enabled.cache_clear()
     monkeypatch.setenv("VLLM_RAON_OPTIMIZATIONS", "full")
     assert _selected() == full
+
+
+@pytest.mark.parametrize("capability", [(9, 0), (12, 0)])
+def test_single_row_routing_on_any_cuda_device(monkeypatch, capability):
+    monkeypatch.delenv("VLLM_RAON_OPTIMIZATIONS_EXCLUDE", raising=False)
+    _select_device(monkeypatch, capability)
+    for mode in (None, "1"):
+        assert _selected_with(monkeypatch, mode) == {"marlin_single_row_routing"}
+    for mode in ("0", "off"):
+        assert _selected_with(monkeypatch, mode) == set()
 
 
 def test_any_device_entry(monkeypatch):

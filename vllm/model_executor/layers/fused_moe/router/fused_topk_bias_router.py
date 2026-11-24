@@ -9,6 +9,7 @@ import vllm.envs as envs
 from vllm._aiter_ops import rocm_aiter_ops
 from vllm.distributed.eplb.eplb_state import EplbLayerState
 from vllm.forward_context import get_forward_context, is_forward_context_available
+from vllm.model_executor.layers.fused_moe import marlin_single_row_route
 from vllm.model_executor.layers.fused_moe.config import (
     RoutingMethodType,
     get_routing_method_type,
@@ -57,6 +58,19 @@ def vllm_topk_sigmoid(
     e_score_correction_bias: torch.Tensor | None = None,
     routed_scaling_factor: float = 1.0,
 ) -> tuple[torch.Tensor, ...]:
+    padding = _get_padding_mask(topk_indices.shape[0])
+    if marlin_single_row_route.ENABLED and marlin_single_row_route.try_route(
+        topk_weights,
+        topk_indices,
+        token_expert_indices,
+        gating_output,
+        renormalize,
+        e_score_correction_bias,
+        routed_scaling_factor,
+        padding,
+    ):
+        return topk_weights, topk_indices
+
     ops.topk_sigmoid(
         topk_weights,
         topk_indices,
@@ -65,7 +79,7 @@ def vllm_topk_sigmoid(
         renormalize,
         e_score_correction_bias,
         routed_scaling_factor,
-        is_padding=_get_padding_mask(topk_indices.shape[0]),
+        is_padding=padding,
     )
 
     return topk_weights, topk_indices

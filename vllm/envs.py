@@ -185,6 +185,7 @@ if TYPE_CHECKING:
     VLLM_MARLIN_USE_ATOMIC_ADD: bool = False
     VLLM_RAON_OPTIMIZATIONS: str = "1"
     VLLM_RAON_OPTIMIZATIONS_EXCLUDE: str = ""
+    VLLM_MARLIN_SINGLE_ROW_ROUTING: bool = False
     VLLM_MARLIN_INPUT_DTYPE: Literal["int8", "fp8"] | None = None
     VLLM_HUMMING_ONLINE_QUANT_CONFIG: dict[str, Any] | None = None
     VLLM_HUMMING_INPUT_QUANT_CONFIG: dict[str, Any] | None = None
@@ -1522,6 +1523,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Comma-separated optimization names to leave off under the switch above.
     "VLLM_RAON_OPTIMIZATIONS_EXCLUDE": lambda: os.environ.get(
         "VLLM_RAON_OPTIMIZATIONS_EXCLUDE", ""
+    ),
+    # Fuse compatible single-token NVFP4 Marlin routing and expert alignment.
+    "VLLM_MARLIN_SINGLE_ROW_ROUTING": lambda: (
+        os.environ.get("VLLM_MARLIN_SINGLE_ROW_ROUTING", "0") == "1"
     ),
     # The activation dtype for marlin kernel
     "VLLM_MARLIN_INPUT_DTYPE": env_with_choices(

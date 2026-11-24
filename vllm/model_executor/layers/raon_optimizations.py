@@ -24,7 +24,9 @@ from vllm.platforms import current_platform
 logger = init_logger(__name__)
 
 # Compute capabilities per optimization; None means every CUDA device.
-_DEVICES: dict[str, tuple[tuple[int, int], ...] | None] = {}
+_DEVICES: dict[str, tuple[tuple[int, int], ...] | None] = {
+    "marlin_single_row_routing": None,
+}
 
 # Optimizations that keep extra resident weights, workspaces or graph pools.
 # Only VLLM_RAON_OPTIMIZATIONS=full selects them.

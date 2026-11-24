@@ -21,6 +21,7 @@ from vllm.forward_context import (
     is_forward_context_available,
 )
 from vllm.logger import init_logger
+from vllm.model_executor.layers.fused_moe import marlin_single_row_route
 from vllm.model_executor.layers.fused_moe.activation import MoEActivation
 from vllm.model_executor.layers.fused_moe.config import (
     FusedMoEConfig,
@@ -593,20 +594,34 @@ class MoERunner(MoERunnerInterface):
             )
         else:
             # Modular kernels: select experts first, then call routed_experts
-            topk_weights, topk_ids = self.router.select_experts(
-                hidden_states=hidden_states,
-                router_logits=router_logits,
-                topk_indices_dtype=self._quant_method.topk_indices_dtype,
-                input_ids=input_ids,
-            )
+            route_token = None
+            if (
+                marlin_single_row_route.ENABLED
+                and router_logits.shape == (1, 128)
+                and self._can_fuse_single_row_route()
+            ):
+                route_token = marlin_single_row_route.active_route.set(
+                    marlin_single_row_route.SingleRowRoute()
+                )
 
-            fused_out = self.routed_experts.forward_modular(
-                x=hidden_states,
-                topk_weights=topk_weights,
-                topk_ids=topk_ids,
-                shared_experts=self._shared_experts,
-                shared_experts_input=shared_experts_input,
-            )
+            try:
+                topk_weights, topk_ids = self.router.select_experts(
+                    hidden_states=hidden_states,
+                    router_logits=router_logits,
+                    topk_indices_dtype=self._quant_method.topk_indices_dtype,
+                    input_ids=input_ids,
+                )
+
+                fused_out = self.routed_experts.forward_modular(
+                    x=hidden_states,
+                    topk_weights=topk_weights,
+                    topk_ids=topk_ids,
+                    shared_experts=self._shared_experts,
+                    shared_experts_input=shared_experts_input,
+                )
+            finally:
+                if route_token is not None:
+                    marlin_single_row_route.active_route.reset(route_token)
 
         self._maybe_apply_shared_experts(
             shared_experts_input,
@@ -616,6 +631,41 @@ class MoERunner(MoERunnerInterface):
         return (
             self._shared_experts.output if self._shared_experts is not None else None,
             fused_out,
+        )
+
+    def _can_fuse_single_row_route(self) -> bool:
+        from vllm.model_executor.layers.fused_moe.experts.marlin_moe import (
+            MarlinExperts,
+        )
+        from vllm.model_executor.layers.fused_moe.prepare_finalize.no_dp_ep import (
+            MoEPrepareAndFinalizeNoDPEPModular,
+        )
+        from vllm.model_executor.layers.fused_moe.router.fused_topk_bias_router import (
+            FusedTopKBiasRouter,
+        )
+        from vllm.scalar_type import scalar_types
+
+        kernel = self._quant_method.moe_kernel
+        if (
+            kernel is None
+            or type(kernel.prepare_finalize) is not MoEPrepareAndFinalizeNoDPEPModular
+            or type(kernel.fused_experts) is not MarlinExperts
+            or type(self.router) is not FusedTopKBiasRouter
+        ):
+            return False
+
+        experts = kernel.fused_experts
+        return (
+            experts.quant_type_id == scalar_types.float4_e2m1f.id
+            and experts.input_dtype is None
+            and experts._lora_context is None
+            and self.routed_experts.expert_map is None
+            and self.router.top_k == 6
+            and self.router.global_num_experts == 128
+            and self.router.scoring_func == "sigmoid"
+            and self.router.num_fused_shared_experts == 0
+            and self.router.eplb_state is None
+            and self.router.capture_fn is None
         )
 
     def _sequence_parallel_context(self):
