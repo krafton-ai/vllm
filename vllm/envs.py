@@ -183,6 +183,8 @@ if TYPE_CHECKING:
     VLLM_RAY_EXTRA_ENV_VAR_PREFIXES_TO_COPY: str = ""
     VLLM_RAY_EXTRA_ENV_VARS_TO_COPY: str = ""
     VLLM_MARLIN_USE_ATOMIC_ADD: bool = False
+    VLLM_RAON_OPTIMIZATIONS: str = "1"
+    VLLM_RAON_OPTIMIZATIONS_EXCLUDE: str = ""
     VLLM_MARLIN_INPUT_DTYPE: Literal["int8", "fp8"] | None = None
     VLLM_HUMMING_ONLINE_QUANT_CONFIG: dict[str, Any] | None = None
     VLLM_HUMMING_INPUT_QUANT_CONFIG: dict[str, Any] | None = None
@@ -1509,6 +1511,17 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Whether to use atomicAdd reduce in gptq/awq marlin kernel.
     "VLLM_MARLIN_USE_ATOMIC_ADD": lambda: (
         os.environ.get("VLLM_MARLIN_USE_ATOMIC_ADD", "0") == "1"
+    ),
+    # Enable the Raon-1 mini optimizations selected for the current GPU.
+    # "1" (default) for those that leave model memory and KV cache capacity
+    # unchanged, "full" for every optimization selected for the GPU, "0" or
+    # "off" for none, which restores the stock paths.
+    "VLLM_RAON_OPTIMIZATIONS": env_with_choices(
+        "VLLM_RAON_OPTIMIZATIONS", "1", ["0", "off", "1", "full"]
+    ),
+    # Comma-separated optimization names to leave off under the switch above.
+    "VLLM_RAON_OPTIMIZATIONS_EXCLUDE": lambda: os.environ.get(
+        "VLLM_RAON_OPTIMIZATIONS_EXCLUDE", ""
     ),
     # The activation dtype for marlin kernel
     "VLLM_MARLIN_INPUT_DTYPE": env_with_choices(
