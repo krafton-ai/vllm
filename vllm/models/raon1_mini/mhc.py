@@ -31,6 +31,8 @@ from typing import Callable
 import torch
 from torch import Tensor, nn
 
+from vllm.platforms import current_platform
+
 from . import raon_phase
 from .batch_invariant import matmul_persistent
 
@@ -157,14 +159,16 @@ def _phi_direct_mode() -> str:
     raw = os.environ.get(_PHI_DIRECT_ENV, "0").strip().lower()
     if raw in ("0", "off", ""):
         return "off"
-    if raw == "1":
-        return "m32"
-    if raw in ("all", "all-pad"):
-        return raw
-    raise RuntimeError(
-        f"{_PHI_DIRECT_ENV}={raw!r} is not one of ('0', 'off', '', '1', "
-        "'all', 'all-pad'). Refusing to guess."
-    )
+    if raw not in ("1", "all", "all-pad"):
+        raise RuntimeError(
+            f"{_PHI_DIRECT_ENV}={raw!r} is not one of ('0', 'off', '', '1', "
+            "'all', 'all-pad'). Refusing to guess."
+        )
+    # The direct kernel is a CUTLASS DSL kernel that only compiles for SM90+.
+    capability = current_platform.get_device_capability()
+    if capability is not None and capability.major < 9:
+        return "off"
+    return "m32" if raw == "1" else raw
 
 
 # "m32" (=1) is the decode-only mode above. "all" / "all-pad" are the
