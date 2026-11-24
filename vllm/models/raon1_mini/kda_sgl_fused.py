@@ -59,11 +59,28 @@ def _announce(key: str, msg: str) -> None:
         print(msg, flush=True)
 
 
+_load_failed = False
+
+
 def _load_module():
-    """Compile (or load the cached build of) the vendored kernel."""
-    global _module
-    if _module is not None:
+    """Compile (or load the cached build of) the vendored kernel.
+
+    Returns None if the extension cannot be built (for example when the CUDA
+    development headers are missing); callers then use the unfused chain.
+    """
+    global _module, _load_failed
+    if _module is not None or _load_failed:
         return _module
+    if torch.cuda.get_device_capability() < (9, 0):
+        # The kernel uses SM90 features (TMA bulk copies, mbarriers and
+        # programmatic dependent launch), so it cannot compile for older GPUs.
+        _load_failed = True
+        _announce(
+            "unsupported",
+            f"[info] {_LEVER}: the fused kernel needs SM90 or newer -- "
+            "unfused chain",
+        )
+        return None
     from torch.utils.cpp_extension import load
 
     src = os.path.join(os.path.dirname(__file__), "kda_sgl_fused_kernel.cu")
@@ -72,13 +89,20 @@ def _load_module():
         _DEFAULT_BUILD_DIR.format(user=os.environ.get("USER", "unknown")),
     )
     os.makedirs(build_dir, exist_ok=True)
-    _module = load(
-        name="kda_sgl_fused",
-        sources=[src],
-        build_directory=build_dir,
-        extra_cuda_cflags=["-O3", "--use_fast_math"],
-        verbose=os.environ.get("RAON_KDA_SGL_FUSED_VERBOSE", "0") == "1",
-    )
+    try:
+        _module = load(
+            name="kda_sgl_fused",
+            sources=[src],
+            build_directory=build_dir,
+            extra_cuda_cflags=["-O3", "--use_fast_math"],
+            verbose=os.environ.get("RAON_KDA_SGL_FUSED_VERBOSE", "0") == "1",
+        )
+    except Exception as error:  # noqa: BLE001 - any build failure falls back
+        _load_failed = True
+        _announce(
+            "build-failed",
+            f"[warn] {_LEVER}: kernel build failed ({error!r}) -- unfused chain",
+        )
     return _module
 
 
@@ -245,9 +269,11 @@ def try_decode(
             "-- unfused chain",
         )
         return False
+    mod = _load_module()
+    if mod is None:
+        return False
     out = core_attn_out[0, :n].view(n, seg)
 
-    mod = _load_module()
     mod.run(
         mixed_qkv_ns,
         a,
