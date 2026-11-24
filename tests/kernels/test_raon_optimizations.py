@@ -82,6 +82,7 @@ def test_off_selects_nothing(monkeypatch, capability, mode):
                 "marlin_single_row_routing",
                 "marlin_resident_bf16",
                 "marlin_reuse_single_row_scratch",
+                "raon_lm_head_bf16",
             },
         ),
         (

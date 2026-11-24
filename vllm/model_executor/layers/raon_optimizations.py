@@ -38,11 +38,19 @@ _DEVICES: dict[str, tuple[tuple[int, int], ...] | None] = {
     "mhc_split_k": ((8, 9),),
     "mhc_single_row": ((8, 9), (11, 0)),
     "marlin_reuse_single_row_scratch": ((10, 3),),
+    "raon_lm_head_bf16": ((10, 3),),
 }
 
 # Optimizations that keep extra resident weights, workspaces or graph pools.
 # Only VLLM_RAON_OPTIMIZATIONS=full selects them.
-_ADDS_MEMORY = frozenset({"marlin_resident_bf16"})
+_ADDS_MEMORY = frozenset(
+    {
+        "marlin_resident_bf16",
+        "raon_lm_head_bf16",
+    }
+)
+
+LM_HEAD_BF16_MIN_ROWS = 33
 
 
 def _for_device(table: dict[tuple[int, int], _T], device_id: int) -> _T | None:
