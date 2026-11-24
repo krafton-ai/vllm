@@ -29,6 +29,7 @@ Memory-efficient attention for decoding.
 It supports page size >= 1.
 """
 
+import functools
 import logging
 
 import torch
@@ -38,6 +39,13 @@ from vllm.platforms import current_platform
 from vllm.triton_utils import tl, triton
 
 is_hip_ = current_platform.is_rocm()
+
+
+@functools.cache
+def _max_shared_memory(device: torch.device) -> int:
+    props = torch.cuda.get_device_properties(device)
+    return getattr(props, "shared_memory_per_block_optin", 0)
+
 
 logger = logging.getLogger(__name__)
 
@@ -527,11 +535,12 @@ def _decode_grouped_att_m_fwd(
         num_stages = 1
     elif not is_hip_ and (
         BLOCK_DMODEL >= 1024
-        or (is_mla and Lk == 576 and current_platform.is_device_capability_family(120))
+        or (is_mla and Lk == 576 and _max_shared_memory(q.device) < 102400)
     ):
         # Avoid shared memory overflow on NVIDIA when BLOCK_DMODEL is large
         # like non-MLA D_QK=576, BLOCK_DMODEL=1024, BLOCK_H=16
-        # exceeds 101376 bytes limit
+        # exceeds 101376 bytes limit. Two-stage MLA decode needs up to
+        # 102400 bytes, more than GPUs with a 99 KiB per-block limit offer.
         num_stages = 1
 
     _fwd_grouped_kernel_stage1[grid](
