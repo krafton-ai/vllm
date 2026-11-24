@@ -31,6 +31,8 @@ from typing import Callable
 import torch
 from torch import Tensor, nn
 
+from vllm import envs
+from vllm.model_executor.layers import raon_optimizations
 from vllm.platforms import current_platform
 
 from . import raon_phase
@@ -149,6 +151,10 @@ _TRAINER_FUSED = _TRAINER_FUSED_ENV or raon_phase.PREFILL_ALIGNED
 # Default OFF; OFF is byte-identical (env read only). Inert on the
 # batch-invariant path (matmul_persistent owns it) and the trainer-fused path
 # (Triton _normalize_project, no torch.mm).
+# Split-K wins for small decode batches, where the regular GEMM for the narrow
+# phi projection leaves most of the GPU idle; larger batches use the regular
+# GEMM.
+_SPLIT_K_MAX_ROWS = 24
 _PHI_DIRECT_ENV = "RAON_MHC_PHI_GEMM_DIRECT"
 _PHI_DIRECT_N_PAD = 64  # kernel N: outputs_per_block=2 needs N % 2 == 0; 64
                         # is the chosen pad (17 would force opb=1).
@@ -1624,6 +1630,20 @@ class RaonMHC(nn.Module):
         )
         return out
 
+    def _use_split_k_phi(self, v: Tensor) -> bool:
+        return (
+            v.is_cuda
+            and (
+                envs.VLLM_RAON_MHC_SPLIT_K
+                or raon_optimizations.enabled("mhc_split_k", v.device.index)
+            )
+            and v.dtype == torch.bfloat16
+            and self.phi.dtype == torch.bfloat16
+            and self.phi.is_contiguous()
+            and 0 < self.phi.shape[0] <= 32
+            and 0 < v.shape[0] <= _SPLIT_K_MAX_ROWS
+        )
+
     def _forward_fused(self, s: Tensor, branch: Callable[[Tensor], Tensor]) -> Tensor:
         """~9 launches per site (vs 29 on the torch path): cublas logits,
         square, torch mean, head epilogue, torch chart einsum, mix."""
@@ -1632,7 +1652,11 @@ class RaonMHC(nn.Module):
         # same cuBLAS kernel as the torch path (M-dependent -> batch-variant).
         v = s.view(T, n * C)
         R = 2 * n + (n - 1) ** 2
-        if _BATCH_INVARIANT:
+        if self._use_split_k_phi(v):
+            from .mhc_split_k import split_k_phi_projection
+
+            mm_out = split_k_phi_projection(v, self.phi)
+        elif _BATCH_INVARIANT:
             # Direct lever inert here: matmul_persistent owns this path.
             mm_out = matmul_persistent(v, self.phi.t())
         elif _PHI_DIRECT:

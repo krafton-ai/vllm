@@ -35,6 +35,7 @@ _RESIDENT_BF16_MIN_ROWS: dict[tuple[int, int], int] = {(10, 3): 512, (11, 0): 25
 _DEVICES: dict[str, tuple[tuple[int, int], ...] | None] = {
     "marlin_single_row_routing": None,
     "marlin_resident_bf16": tuple(_RESIDENT_BF16_MIN_ROWS),
+    "mhc_split_k": ((8, 9),),
 }
 
 # Optimizations that keep extra resident weights, workspaces or graph pools.

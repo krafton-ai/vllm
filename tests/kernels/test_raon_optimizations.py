@@ -72,8 +72,8 @@ def test_off_selects_nothing(monkeypatch, capability, mode):
     [
         (
             (8, 9),
-            {"marlin_single_row_routing"},
-            {"marlin_single_row_routing"},
+            {"marlin_single_row_routing", "mhc_split_k"},
+            {"marlin_single_row_routing", "mhc_split_k"},
         ),
         (
             (10, 3),

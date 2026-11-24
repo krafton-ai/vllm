@@ -182,6 +182,7 @@ if TYPE_CHECKING:
     VLLM_RAY_DP_PLACEMENT_NODE_IPS: str = ""
     VLLM_RAY_EXTRA_ENV_VAR_PREFIXES_TO_COPY: str = ""
     VLLM_RAY_EXTRA_ENV_VARS_TO_COPY: str = ""
+    VLLM_RAON_MHC_SPLIT_K: bool = False
     VLLM_MARLIN_USE_ATOMIC_ADD: bool = False
     VLLM_RAON_OPTIMIZATIONS: str = "1"
     VLLM_RAON_OPTIMIZATIONS_EXCLUDE: str = ""
@@ -1510,6 +1511,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_MODEL_REDIRECT_PATH": lambda: os.environ.get(
         "VLLM_MODEL_REDIRECT_PATH", None
     ),
+    # Opt in to split-K projection for compatible Raon mHC logits.
+    "VLLM_RAON_MHC_SPLIT_K": lambda: os.getenv("VLLM_RAON_MHC_SPLIT_K", "0") == "1",
     # Whether to use atomicAdd reduce in gptq/awq marlin kernel.
     "VLLM_MARLIN_USE_ATOMIC_ADD": lambda: (
         os.environ.get("VLLM_MARLIN_USE_ATOMIC_ADD", "0") == "1"
