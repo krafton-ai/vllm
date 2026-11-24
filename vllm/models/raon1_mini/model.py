@@ -38,7 +38,6 @@ from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.mamba.mamba_utils import (
     MambaStateCopyFunc,
     MambaStateCopyFuncCalculator,
-    MambaStateDtypeCalculator,
     MambaStateShapeCalculator,
 )
 from vllm.model_executor.layers.vocab_parallel_embedding import (
@@ -61,6 +60,7 @@ from vllm.model_executor.models.utils import (
 
 from vllm.transformers_utils.configs.raon1_mini import Raon1MiniConfig
 from .kda import RaonKDAAttention
+from .kda_state_bf16 import num_speculative_tokens, raon_kda_state_dtype
 from .mla_attention import MultiHeadLatentAttention
 from .mlp import RaonMLP, RaonMoE
 from .mla_refit import StableMLAScaleBuffers
@@ -2222,8 +2222,10 @@ class Raon1MiniForCausalLM(nn.Module, SupportsEagle3, HasInnerState, IsHybrid):
     def get_mamba_state_dtype_from_config(
         cls, vllm_config: VllmConfig
     ) -> tuple[torch.dtype, torch.dtype]:
-        return MambaStateDtypeCalculator.kda_state_dtype(
-            vllm_config.model_config.dtype, vllm_config.cache_config.mamba_cache_dtype
+        return raon_kda_state_dtype(
+            vllm_config.model_config.dtype,
+            vllm_config.cache_config.mamba_cache_dtype,
+            num_speculative_tokens(vllm_config),
         )
 
     @classmethod

@@ -184,6 +184,7 @@ if TYPE_CHECKING:
     VLLM_RAY_EXTRA_ENV_VARS_TO_COPY: str = ""
     VLLM_RAON_MHC_SPLIT_K: bool = False
     VLLM_RAON_MHC_SINGLE_ROW: bool = False
+    VLLM_RAON_KDA_STATE_BF16: bool = False
     VLLM_MARLIN_USE_ATOMIC_ADD: bool = False
     VLLM_RAON_OPTIMIZATIONS: str = "1"
     VLLM_RAON_OPTIMIZATIONS_EXCLUDE: str = ""
@@ -1522,6 +1523,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Fuse projection and residual mixing for single-token Raon mHC.
     "VLLM_RAON_MHC_SINGLE_ROW": lambda: (
         os.getenv("VLLM_RAON_MHC_SINGLE_ROW", "0") == "1"
+    ),
+    # Keep the Raon KDA recurrent state in BF16 (requires the fused KDA decode
+    # step without speculative decoding).
+    "VLLM_RAON_KDA_STATE_BF16": lambda: (
+        os.getenv("VLLM_RAON_KDA_STATE_BF16", "0") == "1"
     ),
     # Whether to use atomicAdd reduce in gptq/awq marlin kernel.
     "VLLM_MARLIN_USE_ATOMIC_ADD": lambda: (

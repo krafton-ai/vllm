@@ -56,7 +56,6 @@ def test_explicit_flashkda_requires_a_supported_device(monkeypatch):
         (False, 128, torch.bfloat16, torch.float32),
         (True, 64, torch.bfloat16, torch.float32),
         (True, 128, torch.float16, torch.float32),
-        (True, 128, torch.bfloat16, torch.bfloat16),
     ],
 )
 def test_triton_prefill_contract(monkeypatch, cuda, head_dim, input_dtype, state_dtype):
@@ -76,4 +75,15 @@ def test_flashkda_accepts_bfloat16_state(monkeypatch):
             "auto", 128, torch.bfloat16, -5.0, torch.bfloat16
         )
         == "flashkda"
+    )
+
+
+def test_triton_prefill_accepts_bfloat16_state(monkeypatch):
+    set_device(monkeypatch, 8, 9)
+
+    assert (
+        rda_base.resolve_rda_prefill_backend(
+            "auto", 128, torch.bfloat16, -5.0, torch.bfloat16
+        )
+        == "triton"
     )

@@ -634,6 +634,13 @@ def _chunk_kda_fwd_with_cumulative_g(
         cu_seqlens=cu_seqlens,
         chunk_indices=chunk_indices,
         use_exp2=True,
+        # A BF16 state pool is read and written in place by the h-state kernel
+        # (fp32 math, one rounding on store), so no conversion pass is needed.
+        final_state_dtype=(
+            torch.bfloat16
+            if initial_state is not None and initial_state.dtype == torch.bfloat16
+            else None
+        ),
     )
     del w, u, kg
     o = chunk_gla_fwd_o_gk(

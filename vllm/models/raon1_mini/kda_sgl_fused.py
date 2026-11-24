@@ -60,30 +60,46 @@ def _announce(key: str, msg: str) -> None:
 
 
 _load_failed = False
+_module_bf16 = None
+_load_failed_bf16 = False
 
 
-def _load_module():
+def _load_module(bf16: bool = False, capability: tuple[int, int] | None = None):
     """Compile (or load the cached build of) the vendored kernel.
 
+    ``bf16`` selects the variant that keeps the recurrent state pool in BF16.
+    ``capability`` names the target architecture when the build runs before
+    the CUDA runtime is initialized.
+
     Returns None if the extension cannot be built (for example when the CUDA
-    development headers are missing); callers then use the unfused chain.
+    development headers are missing); callers then use the unfused chain (or,
+    for the BF16 variant, the FP32 state).
     """
-    global _module, _load_failed
-    if _module is not None or _load_failed:
+    global _module, _load_failed, _module_bf16, _load_failed_bf16
+    if bf16:
+        if _module_bf16 is not None or _load_failed_bf16:
+            return _module_bf16
+    elif _module is not None or _load_failed:
         return _module
-    if torch.cuda.get_device_capability() < (9, 0):
+    if (capability or torch.cuda.get_device_capability()) < (9, 0):
         # The kernel uses SM90 features (TMA bulk copies, mbarriers and
         # programmatic dependent launch), so it cannot compile for older GPUs.
-        _load_failed = True
+        if bf16:
+            _load_failed_bf16 = True
+        else:
+            _load_failed = True
         _announce(
-            "unsupported",
+            "unsupported-bf16" if bf16 else "unsupported",
             f"[info] {_LEVER}: the fused kernel needs SM90 or newer -- "
-            "unfused chain",
+            f"{'FP32 state' if bf16 else 'unfused chain'}",
         )
         return None
     from torch.utils.cpp_extension import load
 
-    src = os.path.join(os.path.dirname(__file__), "kda_sgl_fused_kernel.cu")
+    src = os.path.join(
+        os.path.dirname(__file__),
+        "kda_sgl_fused_bf16_kernel.cu" if bf16 else "kda_sgl_fused_kernel.cu",
+    )
     build_dir = os.environ.get(
         _BUILD_DIR_ENV,
         _DEFAULT_BUILD_DIR.format(user=os.environ.get("USER", "unknown")),
@@ -92,21 +108,31 @@ def _load_module():
     from .jit_arch import current_device_arch
 
     try:
-        with current_device_arch():
-            _module = load(
-                name="kda_sgl_fused",
+        with current_device_arch(capability):
+            module = load(
+                name="kda_sgl_fused_bf16" if bf16 else "kda_sgl_fused",
                 sources=[src],
                 build_directory=build_dir,
                 extra_cuda_cflags=["-O3", "--use_fast_math"],
                 verbose=os.environ.get("RAON_KDA_SGL_FUSED_VERBOSE", "0") == "1",
             )
     except Exception as error:  # noqa: BLE001 - any build failure falls back
-        _load_failed = True
+        if bf16:
+            _load_failed_bf16 = True
+        else:
+            _load_failed = True
         _announce(
-            "build-failed",
-            f"[warn] {_LEVER}: kernel build failed ({error!r}) -- unfused chain",
+            "build-failed-bf16" if bf16 else "build-failed",
+            f"[warn] {_LEVER}: {'BF16-state ' if bf16 else ''}kernel build "
+            f"failed ({error!r}) -- "
+            f"{'FP32 state' if bf16 else 'unfused chain'}",
         )
-    return _module
+        return None
+    if bf16:
+        _module_bf16 = module
+    else:
+        _module = module
+    return module
 
 
 def validate_module(self, vllm_config=None) -> None:
@@ -223,9 +249,9 @@ def try_decode(
         and conv_pool.stride(2) == 1
         and state_pool.dim() == 4
         and state_pool.shape[1:] == (H, D, D)
-        and state_pool.dtype == torch.float32
+        and state_pool.dtype in (torch.float32, torch.bfloat16)
         # both state staging paths 16B-load from state + slot*stride
-        and state_pool.stride(0) % 4 == 0
+        and state_pool.stride(0) % (8 if state_pool.dtype == torch.bfloat16 else 4) == 0
     ):
         _announce(
             "pool",
@@ -272,7 +298,7 @@ def try_decode(
             "-- unfused chain",
         )
         return False
-    mod = _load_module()
+    mod = _load_module(bf16=state_pool.dtype == torch.bfloat16)
     if mod is None:
         return False
     out = core_attn_out[0, :n].view(n, seg)

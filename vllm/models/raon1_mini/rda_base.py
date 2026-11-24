@@ -23,7 +23,6 @@ from vllm.model_executor.layers.linear import (
 )
 from vllm.model_executor.layers.mamba.gdn.base import GatedDeltaNetAttention
 from vllm.model_executor.layers.mamba.mamba_utils import (
-    MambaStateDtypeCalculator,
     MambaStateShapeCalculator,
     is_conv_state_dim_first,
 )
@@ -37,6 +36,7 @@ from vllm.platforms import current_platform
 from vllm.third_party.flash_linear_attention.ops.kda import FusedRMSNormGated
 from vllm.v1.attention.backend import AttentionBackend
 
+from .kda_state_bf16 import raon_kda_state_dtype
 from .rda_metadata import RaonRDAAttentionBackend
 
 logger = init_logger(__name__)
@@ -232,11 +232,11 @@ def resolve_rda_prefill_backend(
         not current_platform.is_cuda()
         or dtype != torch.bfloat16
         or head_dim != 128
-        or state_dtype != torch.float32
+        or state_dtype not in (torch.float32, torch.bfloat16)
     ):
         raise RuntimeError(
             "Triton RDA prefill requires CUDA, BF16 inputs, head_dim=128,"
-            " and FP32 recurrent state."
+            " and FP32 or BF16 recurrent state."
         )
     logger.info_once("Using the vendored Triton RDA prefill backend.")
     return "triton"
@@ -295,8 +295,10 @@ class RaonRDABase(GatedDeltaNetAttention):
     ) -> tuple[torch.dtype, torch.dtype]:
         if self.model_config is None or self.cache_config is None:
             raise ValueError("model_config and cache_config must be set")
-        return MambaStateDtypeCalculator.kda_state_dtype(
-            self.model_config.dtype, self.cache_config.mamba_cache_dtype
+        return raon_kda_state_dtype(
+            self.model_config.dtype,
+            self.cache_config.mamba_cache_dtype,
+            self.num_spec,
         )
 
     def get_state_shape(

@@ -745,6 +745,22 @@ class RaonKDAAttention(RaonRDABase):
         self.kda_split_decode_suffix: bool = (
             self.kda_sgl_fused and _kda_split_decode.enabled()
         )
+        # The recurrent state pool is BF16 when kda_state_bf16 selected it at
+        # configuration time (see kda_state_bf16.py). That path only works with
+        # the fused decode step and the Triton prefill.
+        self.kda_state_bf16: bool = self.get_state_dtype()[1] == torch.bfloat16
+        if self.kda_state_bf16 and (
+            not self.kda_sgl_fused
+            or self.kda_prefill_backend != "triton"
+            or self.kda_decode_backend != "fused"
+            or self.kda_inkernel_fla
+            or self.kda_cpr
+            or self.kda_chunk_replay
+        ):
+            raise ValueError(
+                "The BF16 KDA recurrent state requires the fused decode step "
+                "without speculative decoding and the standard Triton prefill."
+            )
         if self.kda_prefill_backend == "flashkda":
             _kda_vsplit.validate(vllm_config)
         if self.kda_sgl_fused_spec:
@@ -1601,7 +1617,10 @@ class RaonKDAAttention(RaonRDABase):
             fused_recurrent_rda_packed_decode as fused_recurrent_kda_packed_decode,
         )
 
-        if os.environ.get("RAON_KDA_DECODE_GRAPH", "1") == "1":
+        if (
+            os.environ.get("RAON_KDA_DECODE_GRAPH", "1") == "1"
+            and not self.kda_state_bf16
+        ):
             from .kda_decode_graph import try_forward
             if try_forward(self, mixed_qkv, g1, g2, beta, ratio, core_attn_out, m):
                 return
@@ -1968,6 +1987,11 @@ class RaonKDAAttention(RaonRDABase):
                         num_actual_tokens,
                     ):
                         return
+                    if self.kda_state_bf16:
+                        raise RuntimeError(
+                            "The BF16 KDA recurrent state has no unfused "
+                            "decode fallback."
+                        )
                 packed_conv_out = torch.empty_like(mixed_qkv_ns)
                 mixed_qkv_ns = causal_conv1d_update(
                     mixed_qkv_ns,

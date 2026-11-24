@@ -95,11 +95,12 @@ def test_off_selects_nothing(monkeypatch, capability, mode):
         ),
         (
             (11, 0),
-            {"marlin_single_row_routing", "mhc_single_row"},
+            {"marlin_single_row_routing", "mhc_single_row", "kda_state_bf16"},
             {
                 "marlin_single_row_routing",
                 "marlin_resident_bf16",
                 "mhc_single_row",
+                "kda_state_bf16",
             },
         ),
         (
@@ -184,6 +185,14 @@ def test_unknown_mode_rejected(monkeypatch, fake_table):
     monkeypatch.setattr(raon_optimizations.current_platform, "is_cuda", lambda: True)
     with pytest.raises(ValueError):
         raon_optimizations.enabled("opt_a")
+
+
+def test_default_mode_keeps_kda_state_bf16(monkeypatch):
+    monkeypatch.setenv("VLLM_RAON_OPTIMIZATIONS", "1")
+    monkeypatch.delenv("VLLM_RAON_OPTIMIZATIONS_EXCLUDE", raising=False)
+    _select_device(monkeypatch, (11, 0))
+    assert raon_optimizations.enabled("kda_state_bf16")
+    assert not raon_optimizations.enabled("marlin_resident_bf16")
 
 
 def test_resident_threshold_per_device(monkeypatch):

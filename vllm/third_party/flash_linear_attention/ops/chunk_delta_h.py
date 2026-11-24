@@ -331,7 +331,11 @@ def chunk_gated_delta_rule_fwd_h(
     chunk_indices: torch.Tensor | None = None,
     chunk_offsets: torch.Tensor | None = None,
     use_exp2: bool = False,
+    final_state_dtype: torch.dtype | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    # ``final_state_dtype`` lets the kernel store the final state directly in a
+    # lower-precision state pool (the kernel computes in fp32 and rounds on
+    # store); the default keeps the fp32 final state.
     # This kernel is slightly different from fla to support Q/K with different head numbers.
     # In fla, Q/K always have the same head number, so Hg is always equal to H.
     B, T, Hg, K, V = *k.shape, u.shape[-1]
@@ -351,7 +355,9 @@ def chunk_gated_delta_rule_fwd_h(
 
     h = k.new_empty(B, NT, H, V, K)
     final_state = (
-        k.new_empty(N, H, V, K, dtype=torch.float32) if output_final_state else None
+        k.new_empty(N, H, V, K, dtype=final_state_dtype or torch.float32)
+        if output_final_state
+        else None
     )
 
     v_new = torch.empty_like(u) if save_new_value else None
