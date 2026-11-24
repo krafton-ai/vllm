@@ -482,7 +482,6 @@ class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
         from vllm.v1.attention.backends.mla.prefill.registry import (
             MLAPrefillBackendEnum,
         )
-        from vllm.v1.attention.backends.registry import AttentionBackendEnum
 
         cls.check_gpu()
         scheduler_config = vllm_config.scheduler_config
@@ -502,21 +501,17 @@ class Raon1MiniForCausalLMConfig(VerifyAndUpdateConfig):
 
         from vllm.platforms import current_platform
 
-        sm120 = current_platform.is_device_capability_family(120)
+        # The MLA decode backend is left to the platform priority list. On
+        # SM100-family GPUs Raon prefers TRT-LLM ragged prefill with FP8
+        # prefill queries, which the platform does not pick for Raon's MLA
+        # dimensions; other GPUs keep the platform's prefill choice and BF16
+        # prefill queries.
         attention_config = vllm_config.attention_config
-        attention_config.backend_per_kind.setdefault(
-            "mla_attention",
-            AttentionBackendEnum.TRITON_MLA
-            if sm120
-            else AttentionBackendEnum.FLASHINFER_MLA,
-        )
-        if attention_config.mla_prefill_backend is None:
-            attention_config.mla_prefill_backend = (
-                MLAPrefillBackendEnum.FLASH_ATTN
-                if sm120
-                else MLAPrefillBackendEnum.TRTLLM_RAGGED
-            )
-        if not sm120:
+        if current_platform.is_device_capability_family(100):
+            if attention_config.mla_prefill_backend is None:
+                attention_config.mla_prefill_backend = (
+                    MLAPrefillBackendEnum.TRTLLM_RAGGED
+                )
             attention_config.use_prefill_query_quantization = True
 
         nvfp4 = os.environ.get("RAON_PRECISION_PROFILE") == "nvfp4"

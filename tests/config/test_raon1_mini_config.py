@@ -45,19 +45,20 @@ def test_raon_attention_defaults_match_device_and_preserve_overrides(
         speculative_config=None,
     )
     Raon1MiniForCausalLMConfig.verify_and_update_config(cast(VllmConfig, config))
-    portable = explicit or capability in (120, 121)
-    assert attention.backend_per_kind["mla_attention"] == (
-        AttentionBackendEnum.TRITON_MLA
-        if portable
-        else AttentionBackendEnum.FLASHINFER_MLA
+    # The MLA decode backend is left to the platform; only SM100-family GPUs
+    # get TRT-LLM ragged prefill with FP8 prefill queries by default.
+    sm100 = capability // 10 == 10
+    assert attention.backend_per_kind.get("mla_attention") == (
+        AttentionBackendEnum.TRITON_MLA if explicit else None
     )
-    assert attention.mla_prefill_backend == (
-        MLAPrefillBackendEnum.FLASH_ATTN
-        if portable
-        else MLAPrefillBackendEnum.TRTLLM_RAGGED
-    )
-    if capability in (120, 121):
-        assert not attention.use_prefill_query_quantization
+    if explicit:
+        expected_prefill = MLAPrefillBackendEnum.FLASH_ATTN
+    elif sm100:
+        expected_prefill = MLAPrefillBackendEnum.TRTLLM_RAGGED
+    else:
+        expected_prefill = None
+    assert attention.mla_prefill_backend == expected_prefill
+    assert attention.use_prefill_query_quantization == sm100
 
 
 @pytest.mark.parametrize(

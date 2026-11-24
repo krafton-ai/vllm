@@ -931,12 +931,13 @@ class MultiHeadLatentAttention(nn.Module, AttentionLayerBase):
         elif (
             self.kv_cache_dtype == "fp8_e4m3"
             and not fp8_prefill
-            and current_platform.is_device_capability_family(120)
+            and not current_platform.is_device_capability_family(100)
         ):
-            # SM120 MLA prefill uses BF16 Q/K/V while retaining an FP8
-            # latent cache. Raon-1 mini uses NoPE in its MLA layers.
+            # Without SM100-family FP8 prefill kernels, MLA prefill uses BF16
+            # Q/K/V while retaining an FP8 latent cache. Raon-1 mini uses NoPE
+            # in its MLA layers.
             assert positions is None and cos_sin_cache is None, (
-                "SM120 FP8-cache/BF16-prefill fallback currently requires NoPE"
+                "FP8-cache/BF16-prefill fallback currently requires NoPE"
             )
             k = fused_mla_kv_concat(k_nope, k_pe)
             ops.concat_and_cache_mla(
