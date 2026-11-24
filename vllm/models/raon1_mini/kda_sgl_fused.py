@@ -89,14 +89,17 @@ def _load_module():
         _DEFAULT_BUILD_DIR.format(user=os.environ.get("USER", "unknown")),
     )
     os.makedirs(build_dir, exist_ok=True)
+    from .jit_arch import current_device_arch
+
     try:
-        _module = load(
-            name="kda_sgl_fused",
-            sources=[src],
-            build_directory=build_dir,
-            extra_cuda_cflags=["-O3", "--use_fast_math"],
-            verbose=os.environ.get("RAON_KDA_SGL_FUSED_VERBOSE", "0") == "1",
-        )
+        with current_device_arch():
+            _module = load(
+                name="kda_sgl_fused",
+                sources=[src],
+                build_directory=build_dir,
+                extra_cuda_cflags=["-O3", "--use_fast_math"],
+                verbose=os.environ.get("RAON_KDA_SGL_FUSED_VERBOSE", "0") == "1",
+            )
     except Exception as error:  # noqa: BLE001 - any build failure falls back
         _load_failed = True
         _announce(

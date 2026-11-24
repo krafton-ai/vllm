@@ -76,13 +76,16 @@ def _load_module():
         _DEFAULT_BUILD_DIR.format(user=os.environ.get("USER", "unknown")),
     )
     os.makedirs(build_dir, exist_ok=True)
-    _module = load(
-        name="kda_sgl_fused_spec",
-        sources=[src],
-        build_directory=build_dir,
-        extra_cuda_cflags=["-O3"],
-        verbose=os.environ.get("RAON_KDA_SGL_FUSED_SPEC_VERBOSE", "0") == "1",
-    )
+    from .jit_arch import current_device_arch
+
+    with current_device_arch():
+        _module = load(
+            name="kda_sgl_fused_spec",
+            sources=[src],
+            build_directory=build_dir,
+            extra_cuda_cflags=["-O3"],
+            verbose=os.environ.get("RAON_KDA_SGL_FUSED_SPEC_VERBOSE", "0") == "1",
+        )
     return _module
 
 
