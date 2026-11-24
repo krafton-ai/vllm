@@ -34,6 +34,7 @@ from vllm.model_executor.layers.mamba.ops.gather_initial_states import (
 )
 from .rda_base import RaonRDABase, _flashkda_prefill
 
+from . import kda_split_decode as _kda_split_decode
 from . import kda_vsplit as _kda_vsplit
 
 # Dedicated persistent FlashKDA buffers. The vLLM workspace arena is shared
@@ -734,6 +735,16 @@ class RaonKDAAttention(RaonRDABase):
         # verify step with spec (the plain one's pool contract never holds there).
         self.kda_sgl_fused = _sgl_on and _spec_k == 0
         self.kda_sgl_fused_spec = _sgl_on and _spec_k > 0
+        # The explicit variable is strict; the device profile only splits when
+        # the fused decode step is available.
+        if _kda_split_decode.explicit() and not self.kda_sgl_fused:
+            raise ValueError(
+                "VLLM_RAON_KDA_SPLIT_DECODE_SUFFIX=1 needs the fused KDA decode "
+                "step (RAON_KDA_SGL_FUSED=1 without speculative decoding)."
+            )
+        self.kda_split_decode_suffix: bool = (
+            self.kda_sgl_fused and _kda_split_decode.enabled()
+        )
         if self.kda_prefill_backend == "flashkda":
             _kda_vsplit.validate(vllm_config)
         if self.kda_sgl_fused_spec:
@@ -1503,15 +1514,93 @@ class RaonKDAAttention(RaonRDABase):
         if attn_metadata_raw is None:
             return
 
+        assert isinstance(attn_metadata_raw, dict)
+        attn_metadata_narrowed = attn_metadata_raw[self.prefix]
+        assert isinstance(attn_metadata_narrowed, RaonRDAMetadata)
+        m = attn_metadata_narrowed
+        if self.kda_split_decode_suffix and self._forward_split_decode(
+            m, mixed_qkv, g1, g2, beta, ratio, core_attn_out
+        ):
+            return
+        self._forward_step(m, mixed_qkv, g1, g2, beta, ratio, core_attn_out)
+
+    def _forward_split_decode(
+        self,
+        m: RaonRDAMetadata,
+        mixed_qkv: torch.Tensor,
+        g1: torch.Tensor,
+        g2: torch.Tensor,
+        beta: torch.Tensor,
+        ratio: torch.Tensor,
+        core_attn_out: torch.Tensor,
+    ) -> bool:
+        """VLLM_RAON_KDA_SPLIT_DECODE_SUFFIX: mixed prefill + decode step.
+
+        Returns True when the step was fully handled. Eligibility (the step's
+        ``[decode rows][prefill rows]`` plan) was fixed when the metadata was
+        built; here only the device-side contract is left, and that is decided
+        by try_decode before it launches anything. A False return therefore
+        leaves every state untouched and the caller runs the original path.
+        """
+        planned = _kda_split_decode.get_plan(m)
+        if planned is None or torch.cuda.is_current_stream_capturing():
+            return False
+        plan, prefill_metadata = planned
+        nd = plan.num_decodes
+        na = m.num_actual_tokens
+        if na != nd + plan.num_prefill_tokens:
+            return False
+        from . import kda_sgl_fused as _sgl_fused
+
+        assert m.non_spec_state_indices_tensor is not None
+        if not _sgl_fused.try_decode(
+            self,
+            mixed_qkv[:nd],
+            g1[:, :nd],
+            g2[:nd],
+            beta[:, :nd],
+            ratio[:, :nd],
+            m.non_spec_state_indices_tensor[:nd],
+            core_attn_out,
+            nd,
+        ):
+            return False
+        # Decode state and output are final. The prefill rows run through the
+        # unchanged path on their own metadata. A separate owning output buffer
+        # is needed because the path ends with an in-place o_norm copy that
+        # rejects a view into the middle of core_attn_out.
+        prefill_out = torch.empty(
+            (1, na - nd) + tuple(core_attn_out.shape[2:]),
+            dtype=core_attn_out.dtype,
+            device=core_attn_out.device,
+        )
+        self._forward_step(
+            prefill_metadata,
+            mixed_qkv[nd:na],
+            g1[:, nd:na],
+            g2[nd:na],
+            beta[:, nd:na],
+            ratio[:, nd:na],
+            prefill_out,
+        )
+        core_attn_out[:, nd:na].copy_(prefill_out)
+        return True
+
+    def _forward_step(
+        self,
+        m: RaonRDAMetadata,
+        mixed_qkv: torch.Tensor,
+        g1: torch.Tensor,
+        g2: torch.Tensor,
+        beta: torch.Tensor,
+        ratio: torch.Tensor,
+        core_attn_out: torch.Tensor,
+    ) -> None:
         from .rda_recurrent import (
             fused_recurrent_rda as fused_recurrent_kda,
             fused_recurrent_rda_packed_decode as fused_recurrent_kda_packed_decode,
         )
 
-        assert isinstance(attn_metadata_raw, dict)
-        attn_metadata_narrowed = attn_metadata_raw[self.prefix]
-        assert isinstance(attn_metadata_narrowed, RaonRDAMetadata)
-        m = attn_metadata_narrowed
         if os.environ.get("RAON_KDA_DECODE_GRAPH", "1") == "1":
             from .kda_decode_graph import try_forward
             if try_forward(self, mixed_qkv, g1, g2, beta, ratio, core_attn_out, m):

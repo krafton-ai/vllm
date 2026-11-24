@@ -77,12 +77,17 @@ def test_off_selects_nothing(monkeypatch, capability, mode):
         ),
         (
             (10, 3),
-            {"marlin_single_row_routing", "marlin_reuse_single_row_scratch"},
+            {
+                "marlin_single_row_routing",
+                "marlin_reuse_single_row_scratch",
+                "raon_kda_split_decode_suffix",
+            },
             {
                 "marlin_single_row_routing",
                 "marlin_resident_bf16",
                 "marlin_reuse_single_row_scratch",
                 "raon_lm_head_bf16",
+                "raon_kda_split_decode_suffix",
             },
         ),
         (

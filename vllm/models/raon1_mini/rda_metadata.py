@@ -30,6 +30,7 @@ from vllm.v1.attention.backends.utils import (
 from vllm.v1.kv_cache_interface import MambaSpec
 
 from .kda_spec_state import relabel_spec_decode_state
+from .kda_split_decode import attach_plan as attach_split_plan
 from .kda_vsplit import attach_mode
 
 
@@ -494,6 +495,7 @@ class RaonRDAMetadataBuilder(GDNAttentionMetadataBuilder):
             token_chunk_offset_ptr=token_chunk_offset_ptr,
         )
         attach_mode(self, common_attn_metadata, metadata)
+        attach_split_plan(self, common_attn_metadata, metadata)
         return metadata
 
 

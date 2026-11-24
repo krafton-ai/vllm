@@ -39,6 +39,7 @@ _DEVICES: dict[str, tuple[tuple[int, int], ...] | None] = {
     "mhc_single_row": ((8, 9), (11, 0)),
     "marlin_reuse_single_row_scratch": ((10, 3),),
     "raon_lm_head_bf16": ((10, 3),),
+    "raon_kda_split_decode_suffix": ((10, 3),),
 }
 
 # Optimizations that keep extra resident weights, workspaces or graph pools.
