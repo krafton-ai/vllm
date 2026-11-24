@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
+import os
 import torch
 import torch.nn.functional as F
 
@@ -249,14 +250,19 @@ def apply_moe_activation(
         assert config.activation_situ_beta is not None, (
             "SITU requires activation_situ_beta from FusedMoEConfig"
         )
-        torch.ops._C.situ_and_mul(
-            output,
-            input,
-            config.activation_situ_beta,
+        linear_beta = (
             -1.0
             if config.activation_situ_linear_beta is None
-            else config.activation_situ_linear_beta,
+            else config.activation_situ_linear_beta
         )
+        # RAON_MOE_SITU_FAST=1 (raon-1-mini production): a bit-identical retile
+        # of situ_and_mul_kernel with a faster launch.
+        if os.environ.get("RAON_MOE_SITU_FAST") == "1":
+            from vllm.models.raon1_mini.moe_situ_fast import try_situ_and_mul
+
+            if try_situ_and_mul(output, input, config.activation_situ_beta, linear_beta):
+                return output
+        torch.ops._C.situ_and_mul(output, input, config.activation_situ_beta, linear_beta)
     elif activation == MoEActivation.SWIGLUOAI:
         torch.ops._C.swigluoai_and_mul(output, input)
     elif activation == MoEActivation.SWIGLUOAI_UNINTERLEAVE:

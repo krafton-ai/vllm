@@ -36,6 +36,14 @@ PRODUCTION_ENV = {
     "RAON_MHC_SPLIT_MIX_BC": "128",
     "RAON_DFLASH_CACHE_ALIGNMENT": "1",
     "RAON_MOE_SHARED_SIDE_STREAM": "1",
+    "RAON_MOE_SITU_FAST": "1",
+    "RAON_MLA_BATCH_INVARIANT": "0",
+    # vLLM kernel selections of the qualified configuration.
+    "VLLM_USE_FLASHINFER_SAMPLER": "1",
+    "VLLM_USE_DEEP_GEMM": "0",
+    "VLLM_MOE_SKIP_PADDING": "0",
+    "VLLM_ALLREDUCE_USE_SYMM_MEM": "0",
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
     "RAON_EXPERIMENT_SHARED_GRAPH": "1",
     # Derived from the precision policy: MLA projections and shared experts
     # are not MXFP8 in either profile.
@@ -82,6 +90,7 @@ def _build_dirs() -> dict[str, str]:
         "RAON_KDA_SGL_FUSED_BUILD_DIR": os.path.join(root, "sgl-kda-fused"),
         "RAON_KDA_SGL_FUSED_SPEC_BUILD_DIR": os.path.join(root, "sgl-kda-fused-spec"),
         "RAON_KDA_VSPLIT_BUILD_DIR": os.path.join(root, "kda-vsplit"),
+        "RAON_MOE_SITU_FAST_BUILD_DIR": os.path.join(root, "situ-fast"),
     }
 
 

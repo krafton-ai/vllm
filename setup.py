@@ -916,7 +916,7 @@ class precompiled_wheel_utils:
             variant = os.getenv("VLLM_PRECOMPILED_WHEEL_VARIANT", None)
             if variant is None:
                 variant = precompiled_wheel_utils.detect_system_cuda_variant()
-            # The raon-1-mini-preview branch sits on this upstream commit. Its
+            # The raon-1-mini branch sits on this upstream commit. Its
             # kernels must come from the matching wheel: resolving the base at
             # install time fails for `pip install git+...` (detached HEAD) or
             # when the GitHub API is rate limited, and the nightly fallback
