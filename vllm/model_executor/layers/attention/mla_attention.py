@@ -1741,6 +1741,68 @@ def align_mla_chunked_context_workspace_size(
     return round_up(max(workspace_size, alignment), alignment)
 
 
+_MLA_PREFILL_WORKSPACE_FRAGMENTATION_FACTOR = 12
+
+
+def _device_total_memory_bytes() -> int | None:
+    if not torch.cuda.is_available():
+        return None
+    return torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory
+
+
+def _auto_mla_prefill_workspace_rows(
+    vllm_config: VllmConfig, default_rows: int
+) -> int | None:
+    """Pick a workspace row limit from device memory headroom, or None to keep
+    the default.
+
+    Each workspace row of a dense context chunk transiently holds, per local
+    head, the ``kv_b_proj`` output ([k_nope; v], ``qk_nope + v`` elements) and
+    the concatenated key (``qk_nope + qk_rope`` elements):
+        bytes_per_row = num_heads * (2 * qk_nope + qk_rope + v) * dtype_size
+    (the value tensor is a view of the projection output). The chunk's attention
+    output scales with query tokens, not workspace rows, so it is not counted.
+    The context-chunk path holds several row-sized buffers at once and growing
+    chunks fragment the caching allocator; 12x the per-row bytes keeps the
+    transient within the headroom left outside ``gpu_memory_utilization``. The
+    limit applies when the default rows would exceed that; it never goes below
+    8192 rows (rounded down to alignment) or one aligned chunk.
+    """
+    total_bytes = _device_total_memory_bytes()
+    if total_bytes is None:
+        return None
+    model_config = vllm_config.model_config
+    dims = get_mla_dims(model_config)
+    num_heads = model_config.get_num_attention_heads(vllm_config.parallel_config)
+    dtype = cast(torch.dtype, model_config.dtype)
+    dtype_size = torch.empty((), dtype=dtype).element_size()
+    bytes_per_row = (
+        num_heads
+        * (2 * dims.qk_nope_head_dim + dims.qk_rope_head_dim + dims.v_head_dim)
+        * dtype_size
+    )
+    headroom = total_bytes * (1 - vllm_config.cache_config.gpu_memory_utilization)
+    bytes_per_row *= _MLA_PREFILL_WORKSPACE_FRAGMENTATION_FACTOR
+    if default_rows * bytes_per_row <= headroom:
+        return None
+
+    alignment = align_mla_chunked_context_workspace_size(vllm_config, 0)
+    floor_rows = max(round_down(8192, alignment), alignment)
+    rows = max(round_down(int(headroom // bytes_per_row), alignment), floor_rows)
+    if rows >= default_rows:
+        return None
+    logger.info(
+        "Limiting the MLA prefill workspace to %d rows (default %d): the "
+        "context-chunk scratch estimate is %.2f GiB for a full chunk, more than "
+        "the %.2f GiB left outside gpu_memory_utilization.",
+        rows,
+        default_rows,
+        default_rows * bytes_per_row / 2**30,
+        headroom / 2**30,
+    )
+    return rows
+
+
 def build_mla_chunked_context_metadata(
     *,
     context_lens_cpu: torch.Tensor,
@@ -2014,10 +2076,23 @@ class MLACommonMetadataBuilder(AttentionMetadataBuilder[M]):
             64 * 1024,
         )
 
-        return align_mla_chunked_context_workspace_size(
+        aligned_size = align_mla_chunked_context_workspace_size(
             vllm_config,
             chunked_prefill_workspace_size,
         )
+        max_rows = vllm_config.attention_config.mla_prefill_workspace_max_rows
+        if max_rows is None:
+            max_rows = _auto_mla_prefill_workspace_rows(vllm_config, aligned_size)
+        if max_rows is None or max_rows >= aligned_size:
+            return aligned_size
+
+        alignment = align_mla_chunked_context_workspace_size(vllm_config, 0)
+        if max_rows < alignment:
+            raise ValueError(
+                f"MLA prefill workspace limit ({max_rows} rows) must fit "
+                f"at least one aligned chunk ({alignment} rows)."
+            )
+        return round_down(max_rows, alignment)
 
     @staticmethod
     def determine_prefill_query_data_type(

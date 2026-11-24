@@ -4,7 +4,7 @@
 from dataclasses import field
 from typing import Any, Literal
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 
 from vllm.config.utils import config
 from vllm.logger import init_logger
@@ -64,6 +64,12 @@ class AttentionConfig:
     mla_prefill_backend: MLAPrefillBackendEnum | None = None
     """MLA prefill backend to use. If None, will be selected automatically.
     Valid options: FLASH_ATTN (FA3/FA4), FLASHINFER, TRTLLM_RAGGED."""
+
+    mla_prefill_workspace_max_rows: int | None = Field(default=None, ge=1)
+    """Optional maximum scratch rows for dense MLA context prefill.
+    The effective size is rounded down to a cache-aligned multiple when
+    limited. Lower values may reduce memory use and change numerical results
+    by splitting the context into more chunks."""
 
     use_prefill_query_quantization: bool = False
     """If set, quantize query for attention in prefill."""
