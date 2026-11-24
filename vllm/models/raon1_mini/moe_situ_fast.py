@@ -47,11 +47,16 @@ import os
 
 import torch
 
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
+
 _LEVER = "RAON_MOE_SITU_FAST"
 _BUILD_DIR_ENV = "RAON_MOE_SITU_FAST_BUILD_DIR"
 _DEFAULT_BUILD_DIR = "/var/tmp/{user}/raon-situ-fast-build"  # vllm.models.raon1_mini sets a per-host cache dir
 
 _loaded = False
+_load_failed = False
 _installed = False
 _calls = {"n": 0, "next": 1}
 
@@ -60,12 +65,17 @@ def lever_on() -> bool:
     return os.environ.get(_LEVER, "0") == "1"
 
 
-def load() -> None:
+def load() -> bool:
     """Compile (or load the cached build of) the kernel and register
-    ``torch.ops.raon_situ.situ_and_mul``. Idempotent."""
-    global _loaded
-    if _loaded:
-        return
+    ``torch.ops.raon_situ.situ_and_mul``. Idempotent.
+
+    Returns False if the extension cannot be built (for example when the CUDA
+    development headers are missing); the failure is remembered and callers
+    then use the stock kernel.
+    """
+    global _loaded, _load_failed
+    if _loaded or _load_failed:
+        return _loaded
     from torch.utils.cpp_extension import load as _cpp_load
 
     src = os.path.join(os.path.dirname(__file__), "moe_situ_fast_kernel.cu")
@@ -74,17 +84,30 @@ def load() -> None:
         _DEFAULT_BUILD_DIR.format(user=os.environ.get("USER", "unknown")),
     )
     os.makedirs(build_dir, exist_ok=True)
+    from .jit_arch import current_device_arch
+
     # No --use_fast_math: tanhf/expf/division must stay the accurate
     # realizations upstream's (non-fast-math) build emits.
-    _cpp_load(
-        name="raon_situ_fast",
-        sources=[src],
-        build_directory=build_dir,
-        extra_cuda_cflags=["-O3"],
-        is_python_module=False,
-        verbose=os.environ.get("RAON_MOE_SITU_FAST_VERBOSE", "0") == "1",
-    )
+    try:
+        with current_device_arch():
+            _cpp_load(
+                name="raon_situ_fast",
+                sources=[src],
+                build_directory=build_dir,
+                extra_cuda_cflags=["-O3"],
+                is_python_module=False,
+                verbose=os.environ.get("RAON_MOE_SITU_FAST_VERBOSE", "0") == "1",
+            )
+    except Exception as error:  # noqa: BLE001 - any build failure falls back
+        _load_failed = True
+        logger.warning(
+            "%s: kernel build failed (%r); using the stock situ_and_mul kernel",
+            _LEVER,
+            error,
+        )
+        return False
     _loaded = True
+    return True
 
 
 def situ_and_mul(out: torch.Tensor, x: torch.Tensor, beta: float,
@@ -115,11 +138,12 @@ def _witness(output: torch.Tensor, input: torch.Tensor) -> None:
 def try_situ_and_mul(output: torch.Tensor, input: torch.Tensor, beta: float, linear_beta: float) -> bool:
     """Called by vLLM's apply_moe_activation SITU branch: run the faster kernel when the lever is on.
 
-    Returns False (the caller runs torch.ops._C.situ_and_mul) when RAON_MOE_SITU_FAST is off or the tensors
-    are not eligible. The kernel is built on the first engaged call, vLLM's eager profile run, before any
-    CUDA-graph capture; processes that never run the MoE never compile it.
+    Returns False (the caller runs torch.ops._C.situ_and_mul) when RAON_MOE_SITU_FAST
+    is off, the tensors are not eligible or the kernel cannot be built. The kernel is
+    built on the first engaged call, vLLM's eager profile run, before any CUDA-graph
+    capture; processes that never run the MoE never compile it.
     """
-    if not lever_on() or not _eligible(output, input):
+    if not lever_on() or not _eligible(output, input) or not load():
         return False
     situ_and_mul(output, input, beta, linear_beta)
     _witness(output, input)
