@@ -75,12 +75,6 @@ _ADDS_MEMORY = frozenset(
     }
 )
 
-# Optimizations the switch does not select, in any mode, until a known defect is
-# fixed. Their own environment variables still enable them explicitly.
-# marlin_dequant_bf16: on SM103, NVFP4 Raon-1 mini decodes runaway text after
-# </think> in some answers (GSM8K 93.2% against 95.8% without it).
-_EXPLICIT_ONLY = frozenset({"marlin_dequant_bf16"})
-
 LM_HEAD_BF16_MIN_ROWS = 33
 MOE_DEQUANT_BF16_MIN_TOKENS = 4096
 MLP_SEGMENT_GRAPH_BUCKETS = (1280, 2304, 3328)
@@ -124,13 +118,6 @@ def enabled(name: str, device_id: int = 0) -> bool:
     capabilities = _DEVICES[name]
     mode = envs.VLLM_RAON_OPTIMIZATIONS
     if mode in ("0", "off") or not current_platform.is_cuda():
-        return False
-    if name in _EXPLICIT_ONLY:
-        logger.info(
-            "Raon optimization %s is off by default; its own environment "
-            "variable enables it",
-            name,
-        )
         return False
     if mode == "1" and name in _ADDS_MEMORY:
         logger.info(

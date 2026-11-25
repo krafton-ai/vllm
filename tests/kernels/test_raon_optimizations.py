@@ -21,7 +21,6 @@ def fake_table(monkeypatch):
         {"opt_a": ((8, 9),), "opt_b": ((8, 9),), "opt_mem": ((8, 9),)},
     )
     monkeypatch.setattr(raon_optimizations, "_ADDS_MEMORY", frozenset({"opt_mem"}))
-    monkeypatch.setattr(raon_optimizations, "_EXPLICIT_ONLY", frozenset())
 
 
 def _select_device(monkeypatch, capability):
@@ -80,12 +79,14 @@ def test_off_selects_nothing(monkeypatch, capability, mode):
             (10, 3),
             {
                 "marlin_single_row_routing",
+                "marlin_dequant_bf16",
                 "marlin_reuse_single_row_scratch",
                 "raon_kda_split_decode_suffix",
             },
             {
                 "marlin_single_row_routing",
                 "marlin_resident_bf16",
+                "marlin_dequant_bf16",
                 "marlin_reuse_single_row_scratch",
                 "raon_lm_head_bf16",
                 "raon_kda_split_decode_suffix",
@@ -98,12 +99,14 @@ def test_off_selects_nothing(monkeypatch, capability, mode):
             (11, 0),
             {
                 "marlin_single_row_routing",
+                "marlin_dequant_bf16",
                 "mhc_single_row",
                 "kda_state_bf16",
             },
             {
                 "marlin_single_row_routing",
                 "marlin_resident_bf16",
+                "marlin_dequant_bf16",
                 "mhc_single_row",
                 "kda_state_bf16",
             },
@@ -280,10 +283,3 @@ def test_dequant_devices_follow_table():
     devices = raon_optimizations._DEVICES["marlin_dequant_bf16"]
     assert devices == tuple(raon_optimizations._DEQUANT_BF16_MIN_ROWS)
     assert devices == ((10, 3), (11, 0))
-
-
-@pytest.mark.parametrize("mode", [None, "1", "full"])
-def test_dequant_bf16_is_explicit_only(monkeypatch, mode):
-    monkeypatch.delenv("VLLM_RAON_OPTIMIZATIONS_EXCLUDE", raising=False)
-    _select_device(monkeypatch, (10, 3))
-    assert "marlin_dequant_bf16" not in _selected_with(monkeypatch, mode)
