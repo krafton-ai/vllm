@@ -113,19 +113,19 @@ class OpenAIServingChatBatch(OpenAIServingChat):
         returns one choice per conversation indexed 0, 1, ..., N-1.
         Streaming, tool use, and beam search are not supported.
         """
-        if os.environ.get("RAON_REASONING_EFFORT_STEERING"):
-            # raon-1-mini reasoning effort: tag the request's steering alpha, or refuse an unknown effort.
-            from vllm.models.raon1_mini import effort_steering
-
-            error = effort_steering.batch_request_error(self, request)
-            if error is not None:
-                return self.create_error_response(error)
         tokenizer = self.renderer.tokenizer
         assert tokenizer is not None
         single_requests = [
             request.to_chat_completion_request(messages)
             for messages in request.messages
         ]
+        if os.environ.get("RAON_REASONING_EFFORT_STEERING"):
+            # raon-1-mini reasoning effort: tag each conversation's steering alpha, or refuse an unknown effort.
+            from vllm.models.raon1_mini import effort_steering
+
+            error = effort_steering.batch_request_error(self, single_requests)
+            if error is not None:
+                return self.create_error_response(error)
 
         parser: Parser | None = None
         if self.parser_cls is not None:

@@ -16,10 +16,9 @@ it is above 0, else NO_THINKING_ALPHA (0.1). The effort names are those of the a
 low, medium, high, xhigh and max; older checkpoints that declare low, medium and high keep
 working.
 
-  API server  chat completions and /v1/responses: the effort the chat template
-              sees selects alpha, which travels as extra_args[ALPHA_KEY] tagged with a per-process secret.
-              Unknown efforts are rejected with HTTP 400, and so are steered efforts with beam search or on
-              /v1/chat/completions/batch, whose requests do not carry the tagged alpha.
+  API server  chat completions, /v1/chat/completions/batch (each conversation) and /v1/responses: the effort the
+              chat template sees selects alpha, which travels as extra_args[ALPHA_KEY] tagged with a per-process
+              secret. Unknown efforts are rejected with HTTP 400, and so are steered efforts with beam search.
   engine      InputProcessor.process_inputs (every endpoint) keeps alpha only when the tag is present, so a
               client cannot set it through vllm_xargs, and salts the prefix cache per alpha value: requests
               share cached KV/KDA state only when they were steered identically. alpha 0 keeps the request's
@@ -184,15 +183,17 @@ def api_request_error(serving, request) -> str | None:
     return None
 
 
-def batch_request_error(serving, request) -> str | None:
-    """/v1/chat/completions/batch: its conversations do not carry the tagged alpha, so steered efforts are refused."""
+def batch_request_error(serving, requests) -> str | None:
+    """/v1/chat/completions/batch: tag each conversation's request like a chat completion (the same effort, alpha and
+    cache salt per conversation); an error message for a 400, or None."""
     if CONFIG is None:
         return None
     try:
-        alpha = _request_effort_alpha(serving, request.to_chat_completion_request(request.messages[0]))
+        for request in requests:
+            _tag_request(serving, request)
     except ValueError as error:
         return str(error)
-    return "reasoning_effort steering is not supported on /v1/chat/completions/batch" if alpha else None
+    return None
 
 
 def engine_request(request):
