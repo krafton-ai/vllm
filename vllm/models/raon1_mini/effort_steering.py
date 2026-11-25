@@ -9,8 +9,10 @@ configure() sets RAON_REASONING_EFFORT_STEERING to {"alpha": {effort: alpha}, "l
 processes inherit. Unset, every function here is a no-op and the model is unchanged
 (load_weights then drops steering tensors). A request with reasoning effort e adds
 alpha[e] * c_L to the MoE output of each listed layer. A request without an effort uses
-the default effort (alpha 0 when none is declared). "none" turns thinking off in the
-chat template and is never steered. The effort names are those of the alpha table, e.g.
+the default effort (alpha 0 when none is declared). A request with thinking off (reasoning effort "none",
+or enable_thinking false in the chat template kwargs from the request or the server's
+defaults) uses the no-thinking alpha whatever its effort: the alpha table's "none" entry when
+it is above 0, else NO_THINKING_ALPHA (0.1). The effort names are those of the alpha table, e.g.
 low, medium, high, xhigh and max; older checkpoints that declare low, medium and high keep
 working.
 
@@ -54,11 +56,12 @@ def _config():
         return None
     config = json.loads(raw)
     alpha = config["alpha"]
-    assert set(config) == {"alpha", "layers", "default", "id"}, config
+    assert set(config) == {"alpha", "layers", "default", "id", "no_thinking"}, config
     assert isinstance(alpha, dict), config
     assert config["default"] is None or config["default"] in alpha, config
     assert config["layers"] and all(type(L) is int and L >= 0 for L in config["layers"]), config
-    assert all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in alpha.values()), alpha
+    assert all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+               for v in [*alpha.values(), config["no_thinking"]]), config
     return config
 
 
@@ -69,14 +72,17 @@ _loaded: set[int] = set()
 KEY_RE = re.compile(r"model\.layers\.(\d+)\.(?:block_sparse_moe|moe)\.reasoning_effort_steering")
 
 
-NO_THINKING = "none"  # thinking off in the chat template; never steered
+NO_THINKING = "none"  # thinking off in the chat template
+NO_THINKING_ALPHA = 0.1  # alpha of a request with thinking off, unless the config's "none" entry is above 0
 
 
 def alpha_for(effort) -> float:
     """reasoning effort -> alpha; ValueError for an effort the deployment does not define."""
     if effort is None:
         effort = CONFIG["default"]
-    if effort is None or effort == NO_THINKING:
+    if effort == NO_THINKING:
+        return float(CONFIG["no_thinking"])
+    if effort is None:
         return 0.0
     if effort not in CONFIG["alpha"]:
         names = ", ".join(dict.fromkeys([NO_THINKING, *CONFIG["alpha"]]))
@@ -95,7 +101,11 @@ def cache_salt(alpha: float, salt: str | None) -> str | None:
 
 
 def _request_effort_alpha(serving, request) -> float:
-    effort = serving._effective_chat_template_kwargs(request).get("reasoning_effort")
+    """The template's kwargs decide: thinking off (enable_thinking false, also set by effort "none") wins."""
+    kwargs = serving._effective_chat_template_kwargs(request)
+    effort = kwargs.get("reasoning_effort")
+    if kwargs.get("enable_thinking") is False:
+        effort = NO_THINKING
     return alpha_for(None if effort is None else str(effort))
 
 
@@ -133,7 +143,8 @@ def configure(hf_config, model: str) -> None:
     Sets RAON_REASONING_EFFORT_STEERING, which the engine and worker processes inherit, from
     config.json "reasoning_effort_steering": {"alpha": {effort: alpha, ...},
     "layers": [...], "default": effort}. "default" is optional and must name an
-    alpha entry. The checkpoint's weights carry the vectors; load_weights checks
+    alpha entry other than "none". The "none" entry, when above 0, is the no-thinking alpha
+    (0, as in configs written before thinking-off steering, means NO_THINKING_ALPHA). The checkpoint's weights carry the vectors; load_weights checks
     that every listed layer received one.
     """
     global CONFIG
@@ -144,17 +155,17 @@ def configure(hf_config, model: str) -> None:
     default = steering.get("default")
     if (not isinstance(alpha, dict) or not alpha
             or any(not isinstance(k, str) for k in alpha)
-            or alpha.get(NO_THINKING, 0) != 0
             or any(type(v) not in (int, float) or not 0 <= v < float("inf") for v in alpha.values())
             or not layers or not all(type(L) is int and L >= 0 for L in layers)
             or (default is not None and (default not in alpha or default == NO_THINKING))):
         raise ValueError(
             "config.json reasoning_effort_steering needs a non-negative alpha per "
-            f"effort name ({NO_THINKING!r} only with 0), the steered layers, and a "
+            "effort name, the steered layers, and a "
             f"default that names an alpha entry other than {NO_THINKING!r}"
         )
+    no_thinking = alpha.get(NO_THINKING, 0) or NO_THINKING_ALPHA
     identity = json.dumps({"model": model, "steering": steering}, sort_keys=True)
-    value = json.dumps({"alpha": alpha, "layers": sorted(layers), "default": default,
+    value = json.dumps({"alpha": alpha, "layers": sorted(layers), "default": default, "no_thinking": no_thinking,
                         "id": __import__("hashlib").sha256(identity.encode()).hexdigest()[:16]}, sort_keys=True)
     os.environ[ENV] = value
     CONFIG = _config()
