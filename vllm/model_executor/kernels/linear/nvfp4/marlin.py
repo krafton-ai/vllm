@@ -89,14 +89,22 @@ def _raon_eligible(layer: torch.nn.Module, min_rows: int) -> int:
 # One scratch buffer per (device, group), shared by every layer of the group
 # on the dequant path: those layers run one after another on the same stream,
 # so the largest dense weight bounds the extra memory. It is sized while
-# weights are processed, before graph capture and KV sizing. Shared-expert
-# layers may run on a side stream concurrently with main-stream layers, so
-# they get their own buffer.
+# weights are processed, before graph capture and KV sizing. A layer that may
+# run on a side stream concurrently with main-stream layers needs a group of
+# its own, otherwise two dequants write the same buffer at once:
+#   1: shared experts (aux stream overlapping the routed experts);
+#   2: the MLA output gate g_proj (model aux stream, overlapping the attention
+#      projections q_b / fused_qkv_a / ... below _GATE_MULTI_STREAM_TOKEN_THRESHOLD).
 _DEQUANT_SCRATCH: dict[tuple[torch.device, int], torch.Tensor] = {}
 
 
 def _dequant_group(layer: torch.nn.Module) -> int:
-    return 1 if "shared_expert" in getattr(layer, "prefix", "") else 0
+    prefix = getattr(layer, "prefix", "")
+    if "shared_expert" in prefix:
+        return 1
+    if prefix.endswith(".g_proj"):
+        return 2
+    return 0
 
 
 def _reserve_dequant_scratch(device: torch.device, group: int, numel: int) -> None:
